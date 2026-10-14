@@ -9,6 +9,7 @@ pub const progress_bar = @import("progress_bar.zig");
 pub const segments = @import("segments.zig");
 pub const theme = @import("theme.zig");
 pub const timer = @import("timer.zig");
+pub const title = @import("title.zig");
 
 test {
     _ = @import("agy.zig");
@@ -20,4 +21,5 @@ test {
     _ = @import("segments.zig");
     _ = @import("theme.zig");
     _ = @import("timer.zig");
+    _ = @import("title.zig");
 }

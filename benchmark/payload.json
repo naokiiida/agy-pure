@@ -1,0 +1,27 @@
+{
+  "conversation_id": "2d9212a9-658f-4185-a3c7-9fa325a56a31",
+  "agent_state": "working",
+  "cwd": "/Users/naokiiida/Documents/1_personal/agy-pure",
+  "model": {
+    "id": "gemini-3.8-flash",
+    "display_name": "Gemini 3.8 Flash"
+  },
+  "workspace": {
+    "current_dir": "/Users/naokiiida/Documents/1_personal/agy-pure",
+    "project_dir": "/Users/naokiiida/Documents/1_personal/agy-pure"
+  },
+  "version": "1.2.17",
+  "context_window": {
+    "total_input_tokens": 42100,
+    "total_output_tokens": 1250,
+    "context_window_size": 200000,
+    "used_percentage": 21.0,
+    "remaining_percentage": 79.0,
+    "current_usage": 42100
+  },
+  "subagents": {
+    "total": 2,
+    "running": 1,
+    "idle": 1
+  }
+}

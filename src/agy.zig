@@ -145,7 +145,11 @@ pub const Session = struct {
     /// Returns true if the agent is actively executing a turn/prompt.
     pub fn isRunning(self: Session) bool {
         if (self.agent_state) |st| {
-            return std.ascii.eqlIgnoreCase(st, "running") or std.ascii.eqlIgnoreCase(st, "processing");
+            return std.ascii.eqlIgnoreCase(st, "running")
+                or std.ascii.eqlIgnoreCase(st, "processing")
+                or std.ascii.eqlIgnoreCase(st, "working")
+                or std.ascii.eqlIgnoreCase(st, "thinking")
+                or std.ascii.eqlIgnoreCase(st, "tool_use");
         }
         return false;
     }

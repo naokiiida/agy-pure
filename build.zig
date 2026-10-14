@@ -51,11 +51,31 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    const title_exe = b.addExecutable(.{
+        .name = "agy_title",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/title_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "agy_pure", .module = mod },
+            },
+        }),
+    });
+
+    b.installArtifact(title_exe);
+
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
     run_cmd.addPassthruArgs();
+
+    const run_title_step = b.step("run-title", "Run the title app");
+    const run_title_cmd = b.addRunArtifact(title_exe);
+    run_title_step.dependOn(&run_title_cmd.step);
+    run_title_cmd.step.dependOn(b.getInstallStep());
+    run_title_cmd.addPassthruArgs();
 
     const mod_tests = b.addTest(.{
         .root_module = mod,
@@ -67,7 +87,13 @@ pub fn build(b: *std.Build) void {
     });
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
+    const title_tests = b.addTest(.{
+        .root_module = title_exe.root_module,
+    });
+    const run_title_tests = b.addRunArtifact(title_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_title_tests.step);
 }
