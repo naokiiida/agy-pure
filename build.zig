@@ -65,6 +65,20 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(title_exe);
 
+    const notify_exe = b.addExecutable(.{
+        .name = "agy_notify",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/notify_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "agy_pure", .module = mod },
+            },
+        }),
+    });
+
+    b.installArtifact(notify_exe);
+
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
@@ -92,8 +106,14 @@ pub fn build(b: *std.Build) void {
     });
     const run_title_tests = b.addRunArtifact(title_tests);
 
+    const notify_tests = b.addTest(.{
+        .root_module = notify_exe.root_module,
+    });
+    const run_notify_tests = b.addRunArtifact(notify_tests);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_title_tests.step);
+    test_step.dependOn(&run_notify_tests.step);
 }

@@ -10,6 +10,7 @@ pub const segments = @import("segments.zig");
 pub const theme = @import("theme.zig");
 pub const timer = @import("timer.zig");
 pub const title = @import("title.zig");
+pub const notify = @import("notify.zig");
 
 test {
     _ = @import("agy.zig");
@@ -22,4 +23,5 @@ test {
     _ = @import("theme.zig");
     _ = @import("timer.zig");
     _ = @import("title.zig");
+    _ = @import("notify.zig");
 }
