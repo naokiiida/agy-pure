@@ -1,12 +1,12 @@
 # Antigravity CLI Window Title JSON Schema
 
-Official documentation: [https://antigravity.google/docs/cli/title](https://antigravity.google/docs/cli/title)
+Official documentation & architecture reference for Antigravity CLI (`agy`) title synchronization.
 
 ---
 
 ## 1. Protocol Overview
 
-Antigravity CLI (`agy`) supports dynamic terminal window title updating. Whenever the agent lifecycle state changes (e.g. idle, working, thinking, tool execution), `agy` executes the configured title command, pipes a comprehensive JSON state payload directly into `stdin`, and captures the formatted string from `stdout`.
+Antigravity CLI (`agy`) supports dynamic terminal window title updating. Whenever the agent lifecycle state changes (e.g. idle, working, reviewing artifacts, waiting for confirmation), `agy` executes the configured title command, pipes a JSON state payload directly into `stdin`, and captures the formatted string from `stdout`.
 
 ```
 ┌─────────────────────────┐          JSON Payload (stdin)         ┌─────────────────────────┐
@@ -83,7 +83,7 @@ Optional flags supported by `agy_title`:
 
 | Field | Type | Description |
 |:---|:---|:---|
-| `agent_state` | string | Current lifecycle state: `"idle"`, `"working"`, `"thinking"`, `"tool_use"`, `"initializing"`, `"waiting_for_user"`, etc. |
+| `agent_state` | string | Current lifecycle state: `"idle"`, `"working"`, `"reviewing"`, `"waiting_for_user"`, `"done"`, `"error"`. |
 | `workspace.current_dir` | string | Current working directory of the CLI session. |
 | `workspace.project_dir` | string | Project root directory where the session was initialized. |
 | `cwd` | string | Fallback working directory path. |
@@ -94,31 +94,47 @@ Optional flags supported by `agy_title`:
 | `subagents` | object / integer | Active subagents count and state breakdown. |
 | `context_window` | object | Token usage and context window consumption percentages. |
 
+> [!IMPORTANT]
+> **Antigravity State Nuance**:
+> Unlike Claude Code, `agy` does **not** emit a separate `"tool_use"` state string. Both model reasoning and tool execution are reported as `"working"`.
+> To provide action-aware titles (e.g., `🛠️ edit_file(title.zig)`), `agy_title` inspects the tail of `transcript.jsonl` whenever `agent_state == "working"`.
+
 ---
 
 ## 5. Lifecycle States & Emoji Mapping
 
-`agy_title` maps all standard and extended Antigravity agent lifecycle states to representative Unicode emojis:
+`agy_title` maps Antigravity agent lifecycle states (plus backward-compatible legacy states) to Unicode emojis:
 
-| State | Emoji | Meaning |
-|:---|:---:|:---|
-| `initializing` | 🚀 | CLI startup / loading session context |
-| `idle` | 😴 | Waiting for user input |
-| `thinking` | 🤔 | Model reasoning / chain-of-thought generation |
-| `working` / `running` | 🏃 | Running turn / executing agent instructions |
-| `tool_use` | 🛠️ | Executing tool call (file edit, bash command, web search) |
-| `processing` | ⚙️ | Processing internal workflows |
-| `waiting_for_input` | ⏳ | Awaiting user response to interactive question or confirmation |
-| `done` / `complete` | ✅ | Task completed successfully |
-| `error` / `errored` | ❌ | Unrecoverable error occurred |
-| `*` (fallback) | 🤖 | Unknown or custom subagent state |
+| State | Emoji | Emitted By `agy` | Meaning |
+|:---|:---:|:---:|:---|
+| `idle` | 😴 | Yes | Turn complete; waiting for next prompt |
+| `working` / `running` | 🏃 | Yes | Model reasoning OR executing tools |
+| `reviewing` | 🧐 | Yes | Artifact Review modal or diff review active |
+| `waiting_for_user` | ⏳ / ⚠️ | Yes | Awaiting user response to question or permission gate |
+| `done` / `complete` | ✅ | Yes | Task completed successfully |
+| `error` / `errored` | ❌ | Yes | Unrecoverable error occurred |
+| `tool_use` | 🛠️ | Claude Code only | Fallback mapping for Claude Code compatibility |
+| `initializing` | 🚀 | Startup | CLI startup / loading session context |
+| `*` (fallback) | 🤖 | N/A | Unknown or unmapped state |
 
 ---
 
-## 6. Workspace Extraction Logic
+## 6. Action-Aware Tool Titling
+
+When `agent_state` is `"working"`, `agy_title` extracts the active tool action from `transcript.jsonl` using a fast (< 0.3ms) 64KB reverse file seeker:
+- If a tool call is found (e.g. `edit_file` targeting `title.zig`):
+  `🛠️ edit_file(title.zig) | agy-pure (main)`
+- If no recent tool call is found (model is actively reasoning / generating text):
+  `🏃 working | agy-pure (main)`
+- If state is `"reviewing"`:
+  `🧐 reviewing | agy-pure (main)`
+
+---
+
+## 7. Workspace Extraction Logic
 
 1. **CitC (Cloud in the Cloud) Detection**:
-   - If the path matches `/google/src/cloud/<username>/<workspace>[/...]`, the workspace name is extracted directly (e.g., `gemini-cli-feature`).
+   - If the path matches `/google/src/cloud/<username>/<workspace>[/...]`, the workspace name is extracted directly (e.g., `gemini-feature`).
 2. **Standard Directory**:
    - Strips trailing directory separators and extracts the basename of `project_dir` or `cwd` (e.g., `/Users/user/code/agy-pure` → `agy-pure`).
 3. **Fallback**:

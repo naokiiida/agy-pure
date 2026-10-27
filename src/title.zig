@@ -1,21 +1,83 @@
 const std = @import("std");
 const agy = @import("agy.zig");
 const directory = @import("directory.zig");
+const timer = @import("timer.zig");
+const format = @import("format.zig");
 
-/// Maps agent_state to a representative Unicode emoji.
+pub const AgentState = enum {
+    idle,
+    working,
+    reviewing,
+    waiting,
+    done,
+    error_state,
+    unknown,
+};
+
+pub const StateMap = std.StaticStringMap(AgentState).initComptime(.{
+    .{ "idle", .idle },
+    .{ "working", .working },
+    .{ "running", .working },
+    .{ "thinking", .working },
+    .{ "processing", .working },
+    .{ "tool_use", .working },
+    .{ "reviewing", .reviewing },
+    .{ "waiting_for_user", .waiting },
+    .{ "waiting_for_input", .waiting },
+    .{ "done", .done },
+    .{ "complete", .done },
+    .{ "error", .error_state },
+    .{ "errored", .error_state },
+});
+
+pub fn parseState(state_str: []const u8) AgentState {
+    var lower_buf: [32]u8 = undefined;
+    if (state_str.len <= lower_buf.len) {
+        for (state_str, 0..) |c, i| {
+            lower_buf[i] = std.ascii.toLower(c);
+        }
+        if (StateMap.get(lower_buf[0..state_str.len])) |st| return st;
+    }
+    return StateMap.get(state_str) orelse .unknown;
+}
+
+pub const StateDescriptor = struct {
+    emoji: []const u8,
+    osc7501_state: []const u8,
+    osc9_4_code: u8, // 0 = clear, 2 = error, 3 = spinner, 4 = paused
+    is_blocked: bool,
+};
+
+pub const state_descriptors = std.EnumArray(AgentState, StateDescriptor).init(.{
+    .idle = .{ .emoji = "", .osc7501_state = "idle", .osc9_4_code = 0, .is_blocked = false },
+    .working = .{ .emoji = "🏃", .osc7501_state = "working", .osc9_4_code = 3, .is_blocked = false },
+    .reviewing = .{ .emoji = "🧐", .osc7501_state = "blocked", .osc9_4_code = 4, .is_blocked = true },
+    .waiting = .{ .emoji = "⏳", .osc7501_state = "blocked", .osc9_4_code = 4, .is_blocked = true },
+    .done = .{ .emoji = "✅", .osc7501_state = "done", .osc9_4_code = 0, .is_blocked = false },
+    .error_state = .{ .emoji = "❌", .osc7501_state = "error", .osc9_4_code = 2, .is_blocked = false },
+    .unknown = .{ .emoji = "🤖", .osc7501_state = "idle", .osc9_4_code = 0, .is_blocked = false },
+});
+
+pub const nerd_state_descriptors = std.EnumArray(AgentState, StateDescriptor).init(.{
+    .idle = .{ .emoji = "", .osc7501_state = "idle", .osc9_4_code = 0, .is_blocked = false },
+    .working = .{ .emoji = "󰑮", .osc7501_state = "working", .osc9_4_code = 3, .is_blocked = false },
+    .reviewing = .{ .emoji = "󰛄", .osc7501_state = "blocked", .osc9_4_code = 4, .is_blocked = true },
+    .waiting = .{ .emoji = "󰔟", .osc7501_state = "blocked", .osc9_4_code = 4, .is_blocked = true },
+    .done = .{ .emoji = "󰄬", .osc7501_state = "done", .osc9_4_code = 0, .is_blocked = false },
+    .error_state = .{ .emoji = "󰅚", .osc7501_state = "error", .osc9_4_code = 2, .is_blocked = false },
+    .unknown = .{ .emoji = "󰚩", .osc7501_state = "idle", .osc9_4_code = 0, .is_blocked = false },
+});
+
+pub fn getStateDescriptor(state: AgentState, nerd_font: bool) StateDescriptor {
+    if (nerd_font) return nerd_state_descriptors.get(state);
+    return state_descriptors.get(state);
+}
+
 pub const StateEmoji = struct {
-    pub fn get(state: []const u8) []const u8 {
-        if (std.ascii.eqlIgnoreCase(state, "initializing")) return "🚀";
-        if (std.ascii.eqlIgnoreCase(state, "idle")) return "😴";
-        if (std.ascii.eqlIgnoreCase(state, "thinking")) return "🤔";
-        if (std.ascii.eqlIgnoreCase(state, "working")) return "🏃";
-        if (std.ascii.eqlIgnoreCase(state, "tool_use")) return "🛠️";
-        if (std.ascii.eqlIgnoreCase(state, "running")) return "🏃";
-        if (std.ascii.eqlIgnoreCase(state, "processing")) return "⚙️";
-        if (std.ascii.eqlIgnoreCase(state, "waiting_for_input") or std.ascii.eqlIgnoreCase(state, "waiting_for_user")) return "⏳";
-        if (std.ascii.eqlIgnoreCase(state, "done") or std.ascii.eqlIgnoreCase(state, "complete")) return "✅";
-        if (std.ascii.eqlIgnoreCase(state, "error") or std.ascii.eqlIgnoreCase(state, "errored")) return "❌";
-        return "🤖";
+    pub fn get(state_str: []const u8) []const u8 {
+        const state = parseState(state_str);
+        const desc = state_descriptors.get(state);
+        return desc.emoji;
     }
 };
 
@@ -27,73 +89,68 @@ pub const TitleStyle = enum {
 pub const TitleConfig = struct {
     style: TitleStyle = .standard,
     emoji: bool = true,
+    nerd_font: bool = false,
     show_branch: bool = false,
     show_subagents: bool = false,
     osc_progress: bool = true,
     tool_action: ?[]const u8 = null,
+    duration: ?[]const u8 = null,
 };
 
+fn resolveState(state_val: anytype) AgentState {
+    return switch (@TypeOf(state_val)) {
+        AgentState => state_val,
+        []const u8 => parseState(state_val),
+        else => parseState(state_val),
+    };
+}
+
 /// Formats OSC 7501 (Ghostty Program Status Protocol):
-/// - working/tool_use/running: \x1b]7501;state=working;message=<status>\x07
-/// - waiting_for_user: \x1b]7501;state=blocked;message=Waiting for user\x07
+/// - working: \x1b]7501;state=working;message=<status>\x07
+/// - waiting/reviewing: \x1b]7501;state=blocked;message=Waiting for user\x07
 /// - idle: \x1b]7501;state=idle\x07
 /// - done: \x1b]7501;state=done\x07
+/// - error: \x1b]7501;state=error\x07
 pub fn formatOsc7501(
     writer: anytype,
-    state: []const u8,
+    state_input: anytype,
     message: ?[]const u8,
 ) !void {
-    if (std.ascii.eqlIgnoreCase(state, "waiting_for_user") or std.ascii.eqlIgnoreCase(state, "waiting_for_input")) {
-        try writer.writeAll("\x1b]7501;state=blocked;message=Waiting for user\x07");
-    } else if (std.ascii.eqlIgnoreCase(state, "done") or std.ascii.eqlIgnoreCase(state, "complete")) {
-        try writer.writeAll("\x1b]7501;state=done\x07");
-    } else if (std.ascii.eqlIgnoreCase(state, "idle")) {
-        try writer.writeAll("\x1b]7501;state=idle\x07");
-    } else if (std.ascii.eqlIgnoreCase(state, "working") or
-        std.ascii.eqlIgnoreCase(state, "tool_use") or
-        std.ascii.eqlIgnoreCase(state, "running") or
-        std.ascii.eqlIgnoreCase(state, "thinking") or
-        std.ascii.eqlIgnoreCase(state, "processing"))
-    {
-        try writer.writeAll("\x1b]7501;state=working");
-        if (message) |msg| {
-            if (msg.len > 0) {
-                try writer.writeAll(";message=");
-                for (msg) |c| {
-                    if (c == ';') {
-                        try writer.writeByte(',');
-                    } else if (c >= 32 and c != 127) {
-                        try writer.writeByte(c);
-                    }
+    const state = resolveState(state_input);
+    const desc = state_descriptors.get(state);
+
+    try writer.writeAll("\x1b]7501;state=");
+    try writer.writeAll(desc.osc7501_state);
+    if (message) |msg| {
+        if (msg.len > 0) {
+            try writer.writeAll(";message=");
+            for (msg) |c| {
+                if (c == ';') {
+                    try writer.writeByte(',');
+                } else if (c >= 32 and c != 127) {
+                    try writer.writeByte(c);
                 }
             }
         }
-        try writer.writeAll("\x07");
-    } else {
-        try writer.writeAll("\x1b]7501;state=idle\x07");
+    } else if (desc.is_blocked) {
+        try writer.writeAll(";message=Waiting for user");
     }
+    try writer.writeAll("\x07");
 }
 
 /// Formats OSC 9;4 (Taskbar & Tab Native Progress Bars for Ghostty/Windows Terminal/iTerm2):
-/// - active (working/tool_use/running): \x1b]9;4;3;0\x07 (indeterminate pulse/spinner)
-/// - waiting_for_user: \x1b]9;4;4;0\x07 (warning/paused state)
+/// - active (working): \x1b]9;4;3;0\x07 (indeterminate pulse/spinner)
+/// - waiting/reviewing: \x1b]9;4;4;0\x07 (warning/paused state)
+/// - error: \x1b]9;4;2;0\x07 (error indicator)
 /// - idle/done: \x1b]9;4;0;0\x07 (clear indicator)
 pub fn formatOsc9_4(
     writer: anytype,
-    state: []const u8,
+    state_input: anytype,
 ) !void {
-    if (std.ascii.eqlIgnoreCase(state, "waiting_for_user") or std.ascii.eqlIgnoreCase(state, "waiting_for_input")) {
-        try writer.writeAll("\x1b]9;4;4;0\x07");
-    } else if (std.ascii.eqlIgnoreCase(state, "working") or
-        std.ascii.eqlIgnoreCase(state, "tool_use") or
-        std.ascii.eqlIgnoreCase(state, "running") or
-        std.ascii.eqlIgnoreCase(state, "thinking") or
-        std.ascii.eqlIgnoreCase(state, "processing"))
-    {
-        try writer.writeAll("\x1b]9;4;3;0\x07");
-    } else {
-        try writer.writeAll("\x1b]9;4;0;0\x07");
-    }
+    const state = resolveState(state_input);
+    const desc = state_descriptors.get(state);
+    const seq = [_]u8{ 0x1b, ']', '9', ';', '4', ';', '0' + desc.osc9_4_code, ';', '0', 0x07 };
+    try writer.writeAll(&seq);
 }
 
 /// Reads the last tool_call action from transcript.jsonl near the end of the file.
@@ -253,7 +310,7 @@ pub fn extractToolAction(allocator: std.mem.Allocator, session: agy.Session) ?[]
     return null;
 }
 
-/// Formats and writes the terminal window title.
+/// Formats and writes the terminal window title according to AGENTS.md / TODO.md specs.
 pub fn render(
     writer: anytype,
     session: agy.Session,
@@ -261,42 +318,168 @@ pub fn render(
     branch_name: ?[]const u8,
 ) !void {
     const state_str = if (session.agent_state) |st| (if (st.len > 0) st else "idle") else "idle";
+    const state = parseState(state_str);
+    const desc = getStateDescriptor(state, config.nerd_font);
     const workspace = directory.extractWorkspace(session.getProjectDir());
 
-    const is_tool = std.ascii.eqlIgnoreCase(state_str, "tool_use");
-    const display_state = if (is_tool and config.tool_action != null)
-        config.tool_action.?
-    else
-        state_str;
-
-    if (config.emoji) {
-        const emoji = StateEmoji.get(state_str);
-        try writer.writeAll(emoji);
-        try writer.writeAll(" ");
-    }
-
-    try writer.writeAll(display_state);
-    try writer.writeAll(" | ");
-    try writer.writeAll(workspace);
-
-    if (config.show_branch) {
-        if (branch_name) |br| {
-            if (br.len > 0) {
-                try writer.writeAll(" (");
-                try writer.writeAll(br);
-                try writer.writeAll(")");
+    switch (state) {
+        .working => {
+            if (config.emoji and desc.emoji.len > 0) {
+                try writer.writeAll(desc.emoji);
+                try writer.writeAll(" ");
             }
-        }
-    }
+            try writer.writeAll(workspace);
+            if (config.show_branch) {
+                if (branch_name) |br| {
+                    if (br.len > 0) {
+                        try writer.writeAll(" (");
+                        try writer.writeAll(br);
+                        try writer.writeAll(")");
+                    }
+                }
+            }
+            if (config.show_subagents) {
+                var sub_buf: [128]u8 = undefined;
+                if (agy.formatSubagents(&sub_buf, session)) |sub_str| {
+                    try writer.writeAll(" ");
+                    try writer.writeAll(sub_str);
+                }
+            }
+            var dur_buf: [32]u8 = undefined;
+            const dur_opt = config.duration orelse blk: {
+                if (timer.peekElapsedMs(session.getConversationId())) |ms| {
+                    break :blk format.formatDuration(&dur_buf, ms);
+                }
+                break :blk null;
+            };
+            if (dur_opt) |dur| {
+                if (dur.len > 0) {
+                    try writer.writeAll(" · ⏱ ");
+                    try writer.writeAll(dur);
+                }
+            }
+        },
+        .reviewing => {
+            if (config.emoji and desc.emoji.len > 0) {
+                try writer.writeAll(desc.emoji);
+                try writer.writeAll(" ");
+            }
+            try writer.writeAll("reviewing | ");
+            try writer.writeAll(workspace);
+            if (config.show_branch) {
+                if (branch_name) |br| {
+                    if (br.len > 0) {
+                        try writer.writeAll(" (");
+                        try writer.writeAll(br);
+                        try writer.writeAll(")");
+                    }
+                }
+            }
+            if (config.show_subagents) {
+                var sub_buf: [128]u8 = undefined;
+                if (agy.formatSubagents(&sub_buf, session)) |sub_str| {
+                    try writer.writeAll(" ");
+                    try writer.writeAll(sub_str);
+                }
+            }
+        },
+        .waiting => {
+            if (config.emoji and desc.emoji.len > 0) {
+                try writer.writeAll(desc.emoji);
+                try writer.writeAll(" ");
+            }
+            try writer.writeAll("waiting | ");
+            try writer.writeAll(workspace);
+            if (config.show_branch) {
+                if (branch_name) |br| {
+                    if (br.len > 0) {
+                        try writer.writeAll(" (");
+                        try writer.writeAll(br);
+                        try writer.writeAll(")");
+                    }
+                }
+            }
+            if (config.show_subagents) {
+                var sub_buf: [128]u8 = undefined;
+                if (agy.formatSubagents(&sub_buf, session)) |sub_str| {
+                    try writer.writeAll(" ");
+                    try writer.writeAll(sub_str);
+                }
+            }
+        },
+        .idle => {
+            // Idle format: <workspace> (<branch>) · <model>. (No "😴 idle | " clutter).
+            try writer.writeAll(workspace);
+            if (config.show_branch) {
+                if (branch_name) |br| {
+                    if (br.len > 0) {
+                        try writer.writeAll(" (");
+                        try writer.writeAll(br);
+                        try writer.writeAll(")");
+                    }
+                }
+            }
+            const model_opt = if (session.model) |m| blk: {
+                if (m.display_name.len > 0) break :blk m.display_name;
+                if (m.id.len > 0) break :blk m.id;
+                break :blk null;
+            } else null;
 
-    if (config.show_subagents) {
-        var sub_buf: [128]u8 = undefined;
-        if (agy.formatSubagents(&sub_buf, session)) |sub_str| {
-            try writer.writeAll(" ");
-            try writer.writeAll(sub_str);
-        }
+            if (model_opt) |model_name| {
+                try writer.writeAll(" · ");
+                try writer.writeAll(model_name);
+            }
+            if (config.show_subagents) {
+                var sub_buf: [128]u8 = undefined;
+                if (agy.formatSubagents(&sub_buf, session)) |sub_str| {
+                    try writer.writeAll(" ");
+                    try writer.writeAll(sub_str);
+                }
+            }
+        },
+        .done, .error_state => {
+            if (config.emoji and desc.emoji.len > 0) {
+                try writer.writeAll(desc.emoji);
+                try writer.writeAll(" ");
+            }
+            const state_name = if (state == .done) "done" else "error";
+            try writer.writeAll(state_name);
+            try writer.writeAll(" | ");
+            try writer.writeAll(workspace);
+            if (config.show_branch) {
+                if (branch_name) |br| {
+                    if (br.len > 0) {
+                        try writer.writeAll(" (");
+                        try writer.writeAll(br);
+                        try writer.writeAll(")");
+                    }
+                }
+            }
+            if (config.show_subagents) {
+                var sub_buf: [128]u8 = undefined;
+                if (agy.formatSubagents(&sub_buf, session)) |sub_str| {
+                    try writer.writeAll(" ");
+                    try writer.writeAll(sub_str);
+                }
+            }
+        },
+        .unknown => {
+            if (config.emoji and desc.emoji.len > 0) {
+                try writer.writeAll(desc.emoji);
+                try writer.writeAll(" ");
+            }
+            try writer.writeAll(workspace);
+            if (config.show_branch) {
+                if (branch_name) |br| {
+                    if (br.len > 0) {
+                        try writer.writeAll(" (");
+                        try writer.writeAll(br);
+                        try writer.writeAll(")");
+                    }
+                }
+            }
+        },
     }
-
     try writer.writeAll("\n");
 }
 
@@ -325,21 +508,60 @@ const TestWriter = struct {
     }
 };
 
-test "StateEmoji mapping matches official specs and conventions" {
-    try std.testing.expectEqualStrings("🚀", StateEmoji.get("initializing"));
-    try std.testing.expectEqualStrings("😴", StateEmoji.get("idle"));
-    try std.testing.expectEqualStrings("🤔", StateEmoji.get("thinking"));
-    try std.testing.expectEqualStrings("🏃", StateEmoji.get("working"));
-    try std.testing.expectEqualStrings("🛠️", StateEmoji.get("tool_use"));
-    try std.testing.expectEqualStrings("🏃", StateEmoji.get("running"));
-    try std.testing.expectEqualStrings("⚙️", StateEmoji.get("processing"));
-    try std.testing.expectEqualStrings("⏳", StateEmoji.get("waiting_for_input"));
-    try std.testing.expectEqualStrings("✅", StateEmoji.get("done"));
-    try std.testing.expectEqualStrings("❌", StateEmoji.get("error"));
-    try std.testing.expectEqualStrings("🤖", StateEmoji.get("unknown_state"));
+test "AgentState comptime parsing with all synonyms" {
+    try std.testing.expectEqual(AgentState.idle, parseState("idle"));
+    try std.testing.expectEqual(AgentState.working, parseState("working"));
+    try std.testing.expectEqual(AgentState.working, parseState("running"));
+    try std.testing.expectEqual(AgentState.working, parseState("thinking"));
+    try std.testing.expectEqual(AgentState.working, parseState("processing"));
+    try std.testing.expectEqual(AgentState.working, parseState("tool_use"));
+    try std.testing.expectEqual(AgentState.reviewing, parseState("reviewing"));
+    try std.testing.expectEqual(AgentState.waiting, parseState("waiting_for_user"));
+    try std.testing.expectEqual(AgentState.waiting, parseState("waiting_for_input"));
+    try std.testing.expectEqual(AgentState.done, parseState("done"));
+    try std.testing.expectEqual(AgentState.done, parseState("complete"));
+    try std.testing.expectEqual(AgentState.error_state, parseState("error"));
+    try std.testing.expectEqual(AgentState.error_state, parseState("errored"));
+    try std.testing.expectEqual(AgentState.unknown, parseState("other"));
 }
 
-test "render standard title matching official title.sh" {
+test "state_descriptors consistency" {
+    const idle_desc = state_descriptors.get(.idle);
+    try std.testing.expectEqualStrings("", idle_desc.emoji);
+    try std.testing.expectEqualStrings("idle", idle_desc.osc7501_state);
+    try std.testing.expectEqual(0, idle_desc.osc9_4_code);
+    try std.testing.expect(!idle_desc.is_blocked);
+
+    const work_desc = state_descriptors.get(.working);
+    try std.testing.expectEqualStrings("🏃", work_desc.emoji);
+    try std.testing.expectEqualStrings("working", work_desc.osc7501_state);
+    try std.testing.expectEqual(3, work_desc.osc9_4_code);
+    try std.testing.expect(!work_desc.is_blocked);
+
+    const rev_desc = state_descriptors.get(.reviewing);
+    try std.testing.expectEqualStrings("🧐", rev_desc.emoji);
+    try std.testing.expectEqualStrings("blocked", rev_desc.osc7501_state);
+    try std.testing.expectEqual(4, rev_desc.osc9_4_code);
+    try std.testing.expect(rev_desc.is_blocked);
+
+    const wait_desc = state_descriptors.get(.waiting);
+    try std.testing.expectEqualStrings("⏳", wait_desc.emoji);
+    try std.testing.expectEqualStrings("blocked", wait_desc.osc7501_state);
+    try std.testing.expectEqual(4, wait_desc.osc9_4_code);
+    try std.testing.expect(wait_desc.is_blocked);
+
+    const done_desc = state_descriptors.get(.done);
+    try std.testing.expectEqualStrings("✅", done_desc.emoji);
+    try std.testing.expectEqualStrings("done", done_desc.osc7501_state);
+    try std.testing.expectEqual(0, done_desc.osc9_4_code);
+
+    const err_desc = state_descriptors.get(.error_state);
+    try std.testing.expectEqualStrings("❌", err_desc.emoji);
+    try std.testing.expectEqualStrings("error", err_desc.osc7501_state);
+    try std.testing.expectEqual(2, err_desc.osc9_4_code);
+}
+
+test "render working title with duration and branch" {
     var tw = TestWriter{};
 
     const session = agy.Session{
@@ -350,11 +572,15 @@ test "render standard title matching official title.sh" {
         },
     };
 
-    try render(&tw, session, .{}, null);
-    try std.testing.expectEqualStrings("🏃 working | agy-pure\n", tw.getWritten());
+    try render(&tw, session, .{ .duration = "3.8s" }, null);
+    try std.testing.expectEqualStrings("🏃 agy-pure · ⏱ 3.8s\n", tw.getWritten());
+
+    tw.len = 0;
+    try render(&tw, session, .{ .show_branch = true, .duration = "14s" }, "main");
+    try std.testing.expectEqualStrings("🏃 agy-pure (main) · ⏱ 14s\n", tw.getWritten());
 }
 
-test "render citc workspace title" {
+test "render idle title with model without clutter" {
     var tw = TestWriter{};
 
     const session = agy.Session{
@@ -363,10 +589,68 @@ test "render citc workspace title" {
             .project_dir = "/google/src/cloud/naokiiida/gemini-feature/google3",
             .current_dir = "/google/src/cloud/naokiiida/gemini-feature/google3",
         },
+        .model = .{
+            .id = "gemini-3.8-flash",
+            .display_name = "Gemini 3.8 Flash",
+        },
     };
 
     try render(&tw, session, .{}, null);
-    try std.testing.expectEqualStrings("😴 idle | gemini-feature\n", tw.getWritten());
+    try std.testing.expectEqualStrings("gemini-feature · Gemini 3.8 Flash\n", tw.getWritten());
+
+    // Without model
+    tw.len = 0;
+    const session_no_model = agy.Session{
+        .agent_state = "idle",
+        .workspace = .{
+            .project_dir = "/google/src/cloud/naokiiida/gemini-feature/google3",
+            .current_dir = "/google/src/cloud/naokiiida/gemini-feature/google3",
+        },
+    };
+    try render(&tw, session_no_model, .{}, null);
+    try std.testing.expectEqualStrings("gemini-feature\n", tw.getWritten());
+}
+
+test "render reviewing and waiting titles" {
+    var tw = TestWriter{};
+
+    const session_rev = agy.Session{
+        .agent_state = "reviewing",
+        .workspace = .{
+            .project_dir = "/Users/naokiiida/Documents/1_personal/agy-pure",
+            .current_dir = "/Users/naokiiida/Documents/1_personal/agy-pure",
+        },
+    };
+
+    try render(&tw, session_rev, .{}, null);
+    try std.testing.expectEqualStrings("🧐 reviewing | agy-pure\n", tw.getWritten());
+
+    tw.len = 0;
+    const session_wait = agy.Session{
+        .agent_state = "waiting_for_user",
+        .workspace = .{
+            .project_dir = "/Users/naokiiida/Documents/1_personal/agy-pure",
+            .current_dir = "/Users/naokiiida/Documents/1_personal/agy-pure",
+        },
+    };
+
+    try render(&tw, session_wait, .{ .show_branch = true }, "feat");
+    try std.testing.expectEqualStrings("⏳ waiting | agy-pure (feat)\n", tw.getWritten());
+}
+
+test "render with --nerd-font" {
+    var tw = TestWriter{};
+
+    const session = agy.Session{
+        .agent_state = "working",
+        .workspace = .{
+            .project_dir = "/Users/naokiiida/Documents/1_personal/agy-pure",
+            .current_dir = "/Users/naokiiida/Documents/1_personal/agy-pure",
+        },
+    };
+
+    try render(&tw, session, .{ .nerd_font = true, .duration = "5.0s" }, null);
+    try std.testing.expectEqualStrings("󰑮 agy-pure · ⏱ 5.0s\n", tw.getWritten());
 }
 
 test "render detailed title with branch and subagents" {
@@ -384,31 +668,17 @@ test "render detailed title with branch and subagents" {
     try render(&tw, session, .{
         .show_branch = true,
         .show_subagents = true,
+        .duration = "2.0s",
     }, "main");
 
-    try std.testing.expectEqualStrings("🤔 thinking | agy-pure (main) [2 subagents]\n", tw.getWritten());
-}
-
-test "render action-aware tool_use title" {
-    var tw = TestWriter{};
-
-    const session = agy.Session{
-        .agent_state = "tool_use",
-        .workspace = .{
-            .project_dir = "/Users/naokiiida/Documents/1_personal/agy-pure",
-            .current_dir = "/Users/naokiiida/Documents/1_personal/agy-pure",
-        },
-    };
-
-    try render(&tw, session, .{ .tool_action = "read_file(main.zig)" }, null);
-    try std.testing.expectEqualStrings("🛠️ read_file(main.zig) | agy-pure\n", tw.getWritten());
+    try std.testing.expectEqualStrings("🏃 agy-pure (main) [2 subagents] · ⏱ 2.0s\n", tw.getWritten());
 }
 
 test "formatOsc7501 sequence formatting" {
     var tw = TestWriter{};
 
     // working / tool_use / running
-    try formatOsc7501(&tw, "working", "read_file(main.zig)");
+    try formatOsc7501(&tw, AgentState.working, "read_file(main.zig)");
     try std.testing.expectEqualStrings("\x1b]7501;state=working;message=read_file(main.zig)\x07", tw.getWritten());
 
     tw.len = 0;
@@ -417,25 +687,35 @@ test "formatOsc7501 sequence formatting" {
 
     // waiting_for_user
     tw.len = 0;
-    try formatOsc7501(&tw, "waiting_for_user", null);
+    try formatOsc7501(&tw, AgentState.waiting, null);
+    try std.testing.expectEqualStrings("\x1b]7501;state=blocked;message=Waiting for user\x07", tw.getWritten());
+
+    // reviewing
+    tw.len = 0;
+    try formatOsc7501(&tw, AgentState.reviewing, null);
     try std.testing.expectEqualStrings("\x1b]7501;state=blocked;message=Waiting for user\x07", tw.getWritten());
 
     // idle
     tw.len = 0;
-    try formatOsc7501(&tw, "idle", null);
+    try formatOsc7501(&tw, AgentState.idle, null);
     try std.testing.expectEqualStrings("\x1b]7501;state=idle\x07", tw.getWritten());
 
     // done
     tw.len = 0;
-    try formatOsc7501(&tw, "done", null);
+    try formatOsc7501(&tw, AgentState.done, null);
     try std.testing.expectEqualStrings("\x1b]7501;state=done\x07", tw.getWritten());
+
+    // error_state
+    tw.len = 0;
+    try formatOsc7501(&tw, AgentState.error_state, null);
+    try std.testing.expectEqualStrings("\x1b]7501;state=error\x07", tw.getWritten());
 }
 
 test "formatOsc9_4 sequence formatting" {
     var tw = TestWriter{};
 
     // active states
-    try formatOsc9_4(&tw, "working");
+    try formatOsc9_4(&tw, AgentState.working);
     try std.testing.expectEqualStrings("\x1b]9;4;3;0\x07", tw.getWritten());
 
     tw.len = 0;
@@ -446,17 +726,26 @@ test "formatOsc9_4 sequence formatting" {
     try formatOsc9_4(&tw, "running");
     try std.testing.expectEqualStrings("\x1b]9;4;3;0\x07", tw.getWritten());
 
-    // waiting_for_user
+    // waiting / reviewing
     tw.len = 0;
-    try formatOsc9_4(&tw, "waiting_for_user");
+    try formatOsc9_4(&tw, AgentState.waiting);
     try std.testing.expectEqualStrings("\x1b]9;4;4;0\x07", tw.getWritten());
+
+    tw.len = 0;
+    try formatOsc9_4(&tw, AgentState.reviewing);
+    try std.testing.expectEqualStrings("\x1b]9;4;4;0\x07", tw.getWritten());
+
+    // error
+    tw.len = 0;
+    try formatOsc9_4(&tw, AgentState.error_state);
+    try std.testing.expectEqualStrings("\x1b]9;4;2;0\x07", tw.getWritten());
 
     // idle / done
     tw.len = 0;
-    try formatOsc9_4(&tw, "idle");
+    try formatOsc9_4(&tw, AgentState.idle);
     try std.testing.expectEqualStrings("\x1b]9;4;0;0\x07", tw.getWritten());
 
     tw.len = 0;
-    try formatOsc9_4(&tw, "done");
+    try formatOsc9_4(&tw, AgentState.done);
     try std.testing.expectEqualStrings("\x1b]9;4;0;0\x07", tw.getWritten());
 }

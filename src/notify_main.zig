@@ -15,8 +15,23 @@ pub const StdoutWriter = struct {
 };
 
 pub fn main(init: std.process.Init) !void {
-    _ = init;
     const allocator = std.heap.smp_allocator;
+
+    var is_notification = false;
+    var args_iter = init.minimal.args.iterate();
+    _ = args_iter.next(); // skip binary name
+
+    while (args_iter.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--event=notification") or std.mem.eql(u8, arg, "-e=notification")) {
+            is_notification = true;
+        } else if (std.mem.eql(u8, arg, "--event") or std.mem.eql(u8, arg, "-e")) {
+            if (args_iter.next()) |val| {
+                if (std.mem.eql(u8, val, "notification")) {
+                    is_notification = true;
+                }
+            }
+        }
+    }
 
     var stdin_buf: [65536]u8 = undefined;
     var total_read: usize = 0;
@@ -50,18 +65,23 @@ pub fn main(init: std.process.Init) !void {
     const payload = parsed.value;
 
     // Filter out intermediate subagents / background tasks: only notify on full turn completion
-    if (!payload.isFullyIdle()) {
+    if (!is_notification and !payload.isFullyIdle()) {
         try writer.writeAll("{}\n");
         return;
     }
 
-    // Determine workspace name
-    const ws_path = payload.getWorkspacePath() orelse "";
-    const workspace = agy_pure.directory.extractWorkspace(ws_path);
-
     // Determine error status
     const err_opt = payload.getError();
     const is_error = err_opt != null or std.mem.eql(u8, payload.getTerminationReason(), "ERROR");
+
+    // Track elapsed turn duration from timer file if normal stop
+    var dur_buf: [32]u8 = undefined;
+    var elapsed_str: ?[]const u8 = null;
+    if (!is_notification) {
+        if (agy_pure.timer.finishTimerMs(payload.getConversationId())) |ms| {
+            elapsed_str = agy_pure.format.formatDuration(&dur_buf, ms);
+        }
+    }
 
     // Extract dynamic summary
     var summary_alloc: ?[]const u8 = null;
@@ -73,11 +93,11 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    const body = summary_alloc orelse "Turn complete";
+    const body = summary_alloc orelse if (is_notification) "Action required" else "Turn complete";
 
-    // Title construction (zero bloat: clean project name or error indicator)
-    var title_buf: [128]u8 = undefined;
-    const title = agy_pure.notify.formatTitle(&title_buf, workspace, is_error);
+    // Title construction (<15 chars: Done (3.8s), ❌ Error (1.4s), or ⏳ Needs input)
+    var title_buf: [64]u8 = undefined;
+    const title = agy_pure.notify.formatNotificationTitle(&title_buf, elapsed_str, is_error, is_notification);
 
     // Format dual OSC notifications (OSC 777 + OSC 9) into stack buffer
     var osc_buf: [1024]u8 = undefined;

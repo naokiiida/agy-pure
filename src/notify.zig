@@ -51,6 +51,12 @@ pub const StopHookPayload = struct {
         if (self.workspace_paths) |wp| if (wp.len > 0 and wp[0].len > 0) return wp[0];
         return null;
     }
+
+    pub fn getConversationId(self: StopHookPayload) []const u8 {
+        if (self.conversationId) |c| if (c.len > 0) return c;
+        if (self.conversation_id) |c| if (c.len > 0) return c;
+        return "default";
+    }
 };
 
 /// Cleans markdown/tags from text and returns a concise single-line summary (up to max_len).
@@ -278,21 +284,28 @@ pub fn extractLastResponse(allocator: std.mem.Allocator, transcript_path: []cons
     return null;
 }
 
-/// Formats notification title: clean workspace name or error indicator without state bloat.
-pub fn formatTitle(buf: []u8, workspace: []const u8, is_error: bool) []const u8 {
-    const has_workspace = workspace.len > 0 and !std.mem.eql(u8, workspace, "unknown");
+/// Formats ultra-compact notification title (<15 chars):
+/// - Notification hook: "⏳ Needs input"
+/// - Error with duration: "❌ Error (<duration>)" or fallback "❌ Error"
+/// - Normal completion with duration: "Done (<duration>)" or fallback "Done"
+pub fn formatNotificationTitle(buf: []u8, elapsed: ?[]const u8, is_error: bool, is_notification: bool) []const u8 {
+    if (is_notification) {
+        return "⏳ Needs input";
+    }
     if (is_error) {
-        if (has_workspace) {
-            return std.fmt.bufPrint(buf, "❌ {s}", .{workspace}) catch "❌ Error";
-        } else {
-            return "❌ Error";
+        if (elapsed) |el| {
+            if (el.len > 0) {
+                return std.fmt.bufPrint(buf, "❌ Error ({s})", .{el}) catch "❌ Error";
+            }
         }
+        return "❌ Error";
     } else {
-        if (has_workspace) {
-            return std.fmt.bufPrint(buf, "{s}", .{workspace}) catch "Antigravity";
-        } else {
-            return "Antigravity";
+        if (elapsed) |el| {
+            if (el.len > 0) {
+                return std.fmt.bufPrint(buf, "Done ({s})", .{el}) catch "Done";
+            }
         }
+        return "Done";
     }
 }
 
@@ -510,21 +523,24 @@ test "cleanSummary strips images and collapses multiple whitespace" {
     try std.testing.expectEqualStrings("Here is the result: done with verification.", summary);
 }
 
-test "formatTitle returns clean workspace without idle" {
-    var buf: [128]u8 = undefined;
+test "formatNotificationTitle formatting for completion, errors, and notification hook" {
+    var buf: [64]u8 = undefined;
 
-    const normal = formatTitle(&buf, "agy-pure", false);
-    try std.testing.expectEqualStrings("agy-pure", normal);
+    // Normal completion with duration
+    try std.testing.expectEqualStrings("Done (3.8s)", formatNotificationTitle(&buf, "3.8s", false, false));
 
-    const normal_unknown = formatTitle(&buf, "unknown", false);
-    try std.testing.expectEqualStrings("Antigravity", normal_unknown);
+    // Normal completion fallback
+    try std.testing.expectEqualStrings("Done", formatNotificationTitle(&buf, null, false, false));
+    try std.testing.expectEqualStrings("Done", formatNotificationTitle(&buf, "", false, false));
 
-    const normal_empty = formatTitle(&buf, "", false);
-    try std.testing.expectEqualStrings("Antigravity", normal_empty);
+    // Error with duration
+    try std.testing.expectEqualStrings("❌ Error (1.4s)", formatNotificationTitle(&buf, "1.4s", true, false));
 
-    const err = formatTitle(&buf, "agy-pure", true);
-    try std.testing.expectEqualStrings("❌ agy-pure", err);
+    // Error fallback
+    try std.testing.expectEqualStrings("❌ Error", formatNotificationTitle(&buf, null, true, false));
+    try std.testing.expectEqualStrings("❌ Error", formatNotificationTitle(&buf, "", true, false));
 
-    const err_unknown = formatTitle(&buf, "unknown", true);
-    try std.testing.expectEqualStrings("❌ Error", err_unknown);
+    // Notification hook (needs input)
+    try std.testing.expectEqualStrings("⏳ Needs input", formatNotificationTitle(&buf, null, false, true));
+    try std.testing.expectEqualStrings("⏳ Needs input", formatNotificationTitle(&buf, "5.0s", false, true));
 }

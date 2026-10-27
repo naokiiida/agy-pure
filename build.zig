@@ -116,4 +116,32 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_title_tests.step);
     test_step.dependOn(&run_notify_tests.step);
+
+    // Install step for ~/.gemini/antigravity-cli/bin
+    const home_env = std.c.getenv("HOME");
+    const home_str = if (home_env) |h| std.mem.sliceTo(h, 0) else "";
+    const default_cli_bin = b.fmt("{s}/.gemini/antigravity-cli/bin", .{home_str});
+    const install_dir = b.option([]const u8, "install-dir", "Destination directory for install-cli step (default: ~/.gemini/antigravity-cli/bin)") orelse default_cli_bin;
+
+    const install_cli_step = b.step("install-cli", "Install binaries to ~/.gemini/antigravity-cli/bin");
+    const mkdir_cmd = b.addSystemCommand(&.{ "mkdir", "-p", install_dir });
+
+    const cp_pure_cmd = b.addSystemCommand(&.{ "cp" });
+    cp_pure_cmd.addFileArg(exe.getEmittedBin());
+    cp_pure_cmd.addArgs(&.{b.fmt("{s}/agy_pure", .{install_dir})});
+    cp_pure_cmd.step.dependOn(&mkdir_cmd.step);
+
+    const cp_title_cmd = b.addSystemCommand(&.{ "cp" });
+    cp_title_cmd.addFileArg(title_exe.getEmittedBin());
+    cp_title_cmd.addArgs(&.{b.fmt("{s}/agy_title", .{install_dir})});
+    cp_title_cmd.step.dependOn(&mkdir_cmd.step);
+
+    const cp_notify_cmd = b.addSystemCommand(&.{ "cp" });
+    cp_notify_cmd.addFileArg(notify_exe.getEmittedBin());
+    cp_notify_cmd.addArgs(&.{b.fmt("{s}/agy_notify", .{install_dir})});
+    cp_notify_cmd.step.dependOn(&mkdir_cmd.step);
+
+    install_cli_step.dependOn(&cp_pure_cmd.step);
+    install_cli_step.dependOn(&cp_title_cmd.step);
+    install_cli_step.dependOn(&cp_notify_cmd.step);
 }

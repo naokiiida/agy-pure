@@ -33,6 +33,7 @@ pub fn main(init: std.process.Init) !void {
                 \\
                 \\Options:
                 \\  --no-emoji       Disable status emoji prefix
+                \\  --nerd-font      Use Nerd Font symbols instead of standard Unicode emojis
                 \\  --git            Show current git branch name in parentheses
                 \\  --subagents      Show active subagents count badge
                 \\  --osc-progress   Emit OSC 7501 & OSC 9;4 escape sequences (default: on)
@@ -43,6 +44,8 @@ pub fn main(init: std.process.Init) !void {
             return;
         } else if (std.mem.eql(u8, arg, "--no-emoji")) {
             config.emoji = false;
+        } else if (std.mem.eql(u8, arg, "--nerd-font")) {
+            config.nerd_font = true;
         } else if (std.mem.eql(u8, arg, "--git")) {
             config.show_branch = true;
         } else if (std.mem.eql(u8, arg, "--subagents")) {
@@ -66,7 +69,7 @@ pub fn main(init: std.process.Init) !void {
 
     if (total_read == 0) {
         var writer = StdoutWriter{};
-        try writer.writeAll("🤖 idle | unknown\n");
+        try writer.writeAll("unknown\n");
         return;
     }
 
@@ -77,18 +80,13 @@ pub fn main(init: std.process.Init) !void {
 
     const parsed = agy_pure.agy.parse(input_arena.allocator(), raw_json) catch {
         var writer = StdoutWriter{};
-        try writer.writeAll("🤖 idle | unknown\n");
+        try writer.writeAll("unknown\n");
         return;
     };
     const session = parsed.value;
 
     const state_str = if (session.agent_state) |st| (if (st.len > 0) st else "idle") else "idle";
-
-    var tool_action_opt: ?[]const u8 = null;
-    if (std.ascii.eqlIgnoreCase(state_str, "tool_use")) {
-        tool_action_opt = agy_pure.title.extractToolAction(input_arena.allocator(), session);
-        config.tool_action = tool_action_opt;
-    }
+    const state = agy_pure.title.parseState(state_str);
 
     var branch_name: ?[]const u8 = null;
     var repo_opt: ?agy_pure.git_status.Repository = null;
@@ -107,15 +105,10 @@ pub fn main(init: std.process.Init) !void {
     try agy_pure.title.render(&writer, session, config, branch_name);
 
     if (config.osc_progress) {
-        const status_msg = if (std.ascii.eqlIgnoreCase(state_str, "tool_use"))
-            (tool_action_opt orelse "tool_use")
-        else
-            state_str;
-
         var osc_buf: [512]u8 = undefined;
         var stack_writer = agy_pure.notify.StackWriter{ .buf = &osc_buf };
-        agy_pure.title.formatOsc7501(&stack_writer, state_str, status_msg) catch {};
-        agy_pure.title.formatOsc9_4(&stack_writer, state_str) catch {};
+        agy_pure.title.formatOsc7501(&stack_writer, state, null) catch {};
+        agy_pure.title.formatOsc9_4(&stack_writer, state) catch {};
 
         const raw_osc = stack_writer.getWritten();
         if (raw_osc.len > 0) {

@@ -1,5 +1,11 @@
 const std = @import("std");
 const assert = std.debug.assert;
+const title = @import("title.zig");
+
+pub const AgentState = title.AgentState;
+pub const StateDescriptor = title.StateDescriptor;
+pub const state_descriptors = title.state_descriptors;
+pub const parseState = title.parseState;
 
 /// Represents model info from AGY / Claude CLI.
 pub const Model = struct {
@@ -381,11 +387,7 @@ pub const Session = struct {
     /// Returns true if the agent is actively executing a turn/prompt.
     pub fn isRunning(self: Session) bool {
         if (self.agent_state) |st| {
-            return std.ascii.eqlIgnoreCase(st, "running")
-                or std.ascii.eqlIgnoreCase(st, "processing")
-                or std.ascii.eqlIgnoreCase(st, "working")
-                or std.ascii.eqlIgnoreCase(st, "thinking")
-                or std.ascii.eqlIgnoreCase(st, "tool_use");
+            return title.parseState(st) == .working;
         }
         return false;
     }
@@ -535,4 +537,10 @@ test "formatSubagents micro-tree" {
     const res = formatSubagents(&buf, parsed.value);
     try std.testing.expect(res != null);
     try std.testing.expectEqualStrings("[2 subagents: 🔬 res, 🏃 deb]", res.?);
+}
+
+test "agy re-exports state_descriptors and AgentState correctly" {
+    const desc = state_descriptors.get(.working);
+    try std.testing.expectEqualStrings("🏃", desc.emoji);
+    try std.testing.expectEqual(AgentState.working, parseState("thinking"));
 }
