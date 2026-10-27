@@ -93,7 +93,6 @@ pub const TitleConfig = struct {
     show_branch: bool = false,
     show_subagents: bool = false,
     osc_progress: bool = true,
-    tool_action: ?[]const u8 = null,
     duration: ?[]const u8 = null,
 };
 
@@ -153,163 +152,6 @@ pub fn formatOsc9_4(
     try writer.writeAll(&seq);
 }
 
-/// Reads the last tool_call action from transcript.jsonl near the end of the file.
-/// Formats as `<tool_name>(<target_file>)` or `<tool_name>`.
-pub fn extractToolActionFromTranscript(allocator: std.mem.Allocator, transcript_path: []const u8) ?[]const u8 {
-    var path_buf: [1024]u8 = undefined;
-    if (transcript_path.len >= path_buf.len) return null;
-    @memcpy(path_buf[0..transcript_path.len], transcript_path);
-    path_buf[transcript_path.len] = 0;
-
-    const fd = std.c.open(path_buf[0..transcript_path.len :0], .{ .ACCMODE = .RDONLY });
-    if (fd < 0) return null;
-    defer _ = std.c.close(fd);
-
-    const file_size_i = std.c.lseek(fd, 0, std.c.SEEK.END);
-    if (file_size_i <= 0) return null;
-    const file_size: usize = @intCast(file_size_i);
-
-    const read_size: usize = @min(file_size, 65536);
-    const offset: i64 = @intCast(file_size - read_size);
-    _ = std.c.lseek(fd, offset, std.c.SEEK.SET);
-
-    const buf = allocator.alloc(u8, read_size) catch return null;
-    defer allocator.free(buf);
-
-    var total_read: usize = 0;
-    while (total_read < read_size) {
-        const n = std.c.read(fd, buf[total_read..].ptr, read_size - total_read);
-        if (n <= 0) break;
-        total_read += @intCast(n);
-    }
-    if (total_read == 0) return null;
-
-    const chunk = buf[0..total_read];
-
-    var idx = chunk.len;
-    while (idx > 0) {
-        const prev_nl = std.mem.lastIndexOfScalar(u8, chunk[0..idx], '\n');
-        const line_start = if (prev_nl) |p| p + 1 else 0;
-        const line = std.mem.trim(u8, chunk[line_start..idx], " \r\n");
-        idx = if (prev_nl) |p| p else 0;
-
-        if (line.len == 0 or line[0] != '{') continue;
-        if (std.mem.indexOf(u8, line, "\"tool_calls\"") == null) continue;
-
-        var parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch continue;
-        defer parsed.deinit();
-
-        if (parsed.value != .object) continue;
-        const obj = parsed.value.object;
-
-        const tc_val = obj.get("tool_calls") orelse continue;
-        if (tc_val != .array or tc_val.array.items.len == 0) continue;
-
-        const latest_tc = tc_val.array.items[tc_val.array.items.len - 1];
-        if (latest_tc != .object) continue;
-        const tc_obj = latest_tc.object;
-
-        const name_val = tc_obj.get("name") orelse continue;
-        if (name_val != .string or name_val.string.len == 0) continue;
-        const tool_name = name_val.string;
-
-        var target_file: ?[]const u8 = null;
-        if (tc_obj.get("args")) |args_val| {
-            if (args_val == .object) {
-                const args = args_val.object;
-                const path_keys = [_][]const u8{ "Path", "path", "file_path", "filePath", "target", "file" };
-                for (path_keys) |k| {
-                    if (args.get(k)) |pv| {
-                        if (pv == .string and pv.string.len > 0) {
-                            var p = pv.string;
-                            p = std.mem.trim(u8, p, "\"");
-                            const base = if (std.mem.lastIndexOfScalar(u8, p, '/')) |si| p[si + 1 ..] else p;
-                            if (base.len > 0) {
-                                target_file = base;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                if (target_file == null) {
-                    if (args.get("CommandLine") orelse args.get("command")) |cv| {
-                        if (cv == .string and cv.string.len > 0) {
-                            var cmd = std.mem.trim(u8, cv.string, "\" \t");
-                            if (cmd.len > 24) cmd = cmd[0..24];
-                            target_file = cmd;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (target_file) |tf| {
-            return std.fmt.allocPrint(allocator, "{s}({s})", .{ tool_name, tf }) catch null;
-        } else {
-            return std.fmt.allocPrint(allocator, "{s}", .{tool_name}) catch null;
-        }
-    }
-
-    return null;
-}
-
-/// Inspects session metadata or transcript.jsonl to extract active tool and target file.
-pub fn extractToolAction(allocator: std.mem.Allocator, session: agy.Session) ?[]const u8 {
-    // 1. Inspect session metadata
-    if (session.tool_name) |tn| {
-        if (tn.len > 0) return allocator.dupe(u8, tn) catch null;
-    }
-
-    const tool_values = [_]?std.json.Value{ session.current_tool, session.active_tool, session.tool };
-    for (tool_values) |tv_opt| {
-        if (tv_opt) |tv| {
-            switch (tv) {
-                .string => |s| if (s.len > 0) return allocator.dupe(u8, s) catch null,
-                .object => |obj| {
-                    const name_val = obj.get("name") orelse obj.get("tool") orelse obj.get("tool_name");
-                    if (name_val) |nv| {
-                        if (nv == .string and nv.string.len > 0) {
-                            const name = nv.string;
-                            const target_val = obj.get("target") orelse obj.get("path") orelse obj.get("file");
-                            if (target_val) |tgv| {
-                                if (tgv == .string and tgv.string.len > 0) {
-                                    const base = if (std.mem.lastIndexOfScalar(u8, tgv.string, '/')) |i| tgv.string[i + 1 ..] else tgv.string;
-                                    return std.fmt.allocPrint(allocator, "{s}({s})", .{ name, base }) catch null;
-                                }
-                            }
-                            return allocator.dupe(u8, name) catch null;
-                        }
-                    }
-                },
-                else => {},
-            }
-        }
-    }
-
-    // 2. Inspect transcript file
-    if (session.transcript_path) |tp| {
-        if (extractToolActionFromTranscript(allocator, tp)) |res| return res;
-    }
-
-    // 3. Inspect default transcript location
-    if (session.conversation_id) |cid| {
-        if (cid.len > 0) {
-            var path_buf: [512]u8 = undefined;
-            const home_ptr = std.c.getenv("HOME");
-            const home: []const u8 = if (home_ptr) |h| std.mem.sliceTo(h, 0) else "";
-            if (home.len > 0) {
-                const default_path = std.fmt.bufPrint(&path_buf, "{s}/.gemini/antigravity-cli/brain/{s}/.system_generated/logs/transcript.jsonl", .{ home, cid }) catch "";
-                if (default_path.len > 0) {
-                    if (extractToolActionFromTranscript(allocator, default_path)) |res| return res;
-                }
-            }
-        }
-    }
-
-    return null;
-}
-
 /// Formats and writes the terminal window title according to AGENTS.md / TODO.md specs.
 pub fn render(
     writer: anytype,
@@ -364,7 +206,6 @@ pub fn render(
                 try writer.writeAll(desc.emoji);
                 try writer.writeAll(" ");
             }
-            try writer.writeAll("reviewing | ");
             try writer.writeAll(workspace);
             if (config.show_branch) {
                 if (branch_name) |br| {
@@ -388,7 +229,6 @@ pub fn render(
                 try writer.writeAll(desc.emoji);
                 try writer.writeAll(" ");
             }
-            try writer.writeAll("waiting | ");
             try writer.writeAll(workspace);
             if (config.show_branch) {
                 if (branch_name) |br| {
@@ -442,9 +282,6 @@ pub fn render(
                 try writer.writeAll(desc.emoji);
                 try writer.writeAll(" ");
             }
-            const state_name = if (state == .done) "done" else "error";
-            try writer.writeAll(state_name);
-            try writer.writeAll(" | ");
             try writer.writeAll(workspace);
             if (config.show_branch) {
                 if (branch_name) |br| {
@@ -623,7 +460,7 @@ test "render reviewing and waiting titles" {
     };
 
     try render(&tw, session_rev, .{}, null);
-    try std.testing.expectEqualStrings("🧐 reviewing | agy-pure\n", tw.getWritten());
+    try std.testing.expectEqualStrings("🧐 agy-pure\n", tw.getWritten());
 
     tw.len = 0;
     const session_wait = agy.Session{
@@ -635,7 +472,7 @@ test "render reviewing and waiting titles" {
     };
 
     try render(&tw, session_wait, .{ .show_branch = true }, "feat");
-    try std.testing.expectEqualStrings("⏳ waiting | agy-pure (feat)\n", tw.getWritten());
+    try std.testing.expectEqualStrings("⏳ agy-pure (feat)\n", tw.getWritten());
 }
 
 test "render with --nerd-font" {

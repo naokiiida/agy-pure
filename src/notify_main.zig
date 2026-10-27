@@ -74,13 +74,9 @@ pub fn main(init: std.process.Init) !void {
     const err_opt = payload.getError();
     const is_error = err_opt != null or std.mem.eql(u8, payload.getTerminationReason(), "ERROR");
 
-    // Track elapsed turn duration from timer file if normal stop
-    var dur_buf: [32]u8 = undefined;
-    var elapsed_str: ?[]const u8 = null;
+    // Consume and clean up timer file if normal stop
     if (!is_notification) {
-        if (agy_pure.timer.finishTimerMs(payload.getConversationId())) |ms| {
-            elapsed_str = agy_pure.format.formatDuration(&dur_buf, ms);
-        }
+        _ = agy_pure.timer.finishTimerMs(payload.getConversationId());
     }
 
     // Extract dynamic summary
@@ -95,9 +91,9 @@ pub fn main(init: std.process.Init) !void {
 
     const body = summary_alloc orelse if (is_notification) "Action required" else "Turn complete";
 
-    // Title construction (<15 chars: Done (3.8s), ❌ Error (1.4s), or ⏳ Needs input)
-    var title_buf: [64]u8 = undefined;
-    const title = agy_pure.notify.formatNotificationTitle(&title_buf, elapsed_str, is_error, is_notification);
+    // Title construction (Done, ❌ Error, or ⏳ Needs input)
+    // Note: Tab title (surface.title) already carries the live duration ticker in Ghostty's subtitle
+    const title = agy_pure.notify.formatNotificationTitle(is_error, is_notification);
 
     // Format dual OSC notifications (OSC 777 + OSC 9) into stack buffer
     var osc_buf: [1024]u8 = undefined;

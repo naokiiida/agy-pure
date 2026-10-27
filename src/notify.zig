@@ -284,29 +284,21 @@ pub fn extractLastResponse(allocator: std.mem.Allocator, transcript_path: []cons
     return null;
 }
 
-/// Formats ultra-compact notification title (<15 chars):
+/// Formats clean notification title (<15 chars):
 /// - Notification hook: "⏳ Needs input"
-/// - Error with duration: "❌ Error (<duration>)" or fallback "❌ Error"
-/// - Normal completion with duration: "Done (<duration>)" or fallback "Done"
-pub fn formatNotificationTitle(buf: []u8, elapsed: ?[]const u8, is_error: bool, is_notification: bool) []const u8 {
+/// - Error: "❌ Error"
+/// - Normal completion: "Done"
+/// Note: Duration is deliberately omitted here because the active terminal tab title
+/// (surface.title) already carries the live duration (e.g. "🏃 agy-pure · ⏱ 14s"),
+/// which Ghostty automatically projects into the notification subtitle.
+pub fn formatNotificationTitle(is_error: bool, is_notification: bool) []const u8 {
     if (is_notification) {
         return "⏳ Needs input";
     }
     if (is_error) {
-        if (elapsed) |el| {
-            if (el.len > 0) {
-                return std.fmt.bufPrint(buf, "❌ Error ({s})", .{el}) catch "❌ Error";
-            }
-        }
         return "❌ Error";
-    } else {
-        if (elapsed) |el| {
-            if (el.len > 0) {
-                return std.fmt.bufPrint(buf, "Done ({s})", .{el}) catch "Done";
-            }
-        }
-        return "Done";
     }
+    return "Done";
 }
 
 /// Formats the OSC 777 sequence: \x1b]777;notify;{title};{body}\x07
@@ -524,23 +516,13 @@ test "cleanSummary strips images and collapses multiple whitespace" {
 }
 
 test "formatNotificationTitle formatting for completion, errors, and notification hook" {
-    var buf: [64]u8 = undefined;
+    // Normal completion
+    try std.testing.expectEqualStrings("Done", formatNotificationTitle(false, false));
 
-    // Normal completion with duration
-    try std.testing.expectEqualStrings("Done (3.8s)", formatNotificationTitle(&buf, "3.8s", false, false));
-
-    // Normal completion fallback
-    try std.testing.expectEqualStrings("Done", formatNotificationTitle(&buf, null, false, false));
-    try std.testing.expectEqualStrings("Done", formatNotificationTitle(&buf, "", false, false));
-
-    // Error with duration
-    try std.testing.expectEqualStrings("❌ Error (1.4s)", formatNotificationTitle(&buf, "1.4s", true, false));
-
-    // Error fallback
-    try std.testing.expectEqualStrings("❌ Error", formatNotificationTitle(&buf, null, true, false));
-    try std.testing.expectEqualStrings("❌ Error", formatNotificationTitle(&buf, "", true, false));
+    // Error
+    try std.testing.expectEqualStrings("❌ Error", formatNotificationTitle(true, false));
 
     // Notification hook (needs input)
-    try std.testing.expectEqualStrings("⏳ Needs input", formatNotificationTitle(&buf, null, false, true));
-    try std.testing.expectEqualStrings("⏳ Needs input", formatNotificationTitle(&buf, "5.0s", false, true));
+    try std.testing.expectEqualStrings("⏳ Needs input", formatNotificationTitle(false, true));
+    try std.testing.expectEqualStrings("⏳ Needs input", formatNotificationTitle(true, true));
 }

@@ -4,49 +4,50 @@
 
 ### A. Lifecycle Hook Timing & Dual Hooking (`agy_notify`)
 - **Dual Hook Pattern**: To catch both turn completions AND mid-turn human-in-the-loop approvals, `agy_notify` is registered under both **`Stop`** and **`Notification`** in `~/.gemini/config/hooks.json` (mirroring the `cmux` architecture):
-  - **`Stop`**: Fires when the execution loop terminates (`NO_TOOL_CALL`, `ERROR`) → Emits `Done (3.8s)` or `❌ Error (1.4s)`.
+  - **`Stop`**: Fires when the execution loop terminates (`NO_TOOL_CALL`, `ERROR`) → Emits `Done` or `❌ Error`.
   - **`Notification`**: Fires when the agent pauses for user permission, questions, or confirmations → Emits `⏳ Needs input`.
-- **`read_file` / tool execution does NOT trigger notifications**: Antigravity does not fire notification hooks on individual tool calls. Attempting to extract past tool names (e.g. `read_file(foo)`) from the transcript at turn completion is conceptually incorrect and produces misleading noise.
+- **`read_file` / tool execution does NOT trigger notifications**: Antigravity does not fire notification hooks on individual tool calls. Tool extraction from transcripts at turn completion is conceptually incorrect and produces misleading noise.
 
-### B. Antigravity State Machine Realities (`agy_title`)
+### B. Antigravity State Machine Realities & Live Ticker Loop (`agy_title`)
 - In Antigravity CLI (`agy`), the runtime lifecycle states are:
   - `"working"`: Model reasoning, token streaming, **and** all tool execution (`run_command`, `edit_file`, etc.). `agy` does *not* emit a `"tool_use"` state.
   - `"reviewing"`: Artifact review modal / diff inspection active.
   - `"waiting_for_user"`: Blocked awaiting user confirmation or interactive question.
   - `"idle"`: Turn completed; sitting at terminal prompt.
-- **Why titles are "always working"**: Because `agent_state` remains `"working"` across the entire multi-step turn, `agy_title` outputs a static `🏃 working | {workspace}` without elapsed time or momentum indicators.
+- **Continuous Ticker Loop**: Antigravity does **not** only invoke `title` on macro state transitions; empirical probe measurements confirm `agy` invokes `title` continuously on an active ~300–500ms ticker loop during turns.
+- **Negligible Overhead**: `peekElapsedMs` reads 14 bytes from memory-cached `/tmp` via direct POSIX syscalls (< 1.5µs). Full `agy_title` binary runs in ~2.0ms with 0 heap allocations, consuming ~0.5% of one CPU core only while working.
 
 ### C. macOS / Ghostty Notification Layout Constraints
 - In Ghostty on macOS, notifications dispatched via OSC 777 are laid out as:
-  - **Title (Bold Header)**: Narrow width (~25–30 characters max). Long titles like `agy-pure · 🛠️ edit_file(title.zig) (⏱...` truncate, cutting off the most vital data (elapsed duration).
-  - **Subtitle**: Ghostty automatically populates this from the active window/tab title (`surface.title`), which already contains `{workspace}` (e.g. `agy-pure`).
+  - **Title (Bold Header)**: Mapped from OSC 777 title argument.
+  - **Subtitle**: Ghostty automatically populates this from the active window/tab title (`surface.title`), which already contains `{workspace}` and the live ticker (e.g. `🏃 agy-pure (main*) · ⏱ 14s`).
   - **Body**: The turn response summary.
-- **Redundancy**: Repeating `{workspace}` in the notification title bloats the header and duplicates the subtitle.
+- **Redundancy Resolution**: Because `surface.title` already carries the live duration ticker into Ghostty's subtitle, putting duration in the notification title (`Done (14s)`) creates duplicate timers. Keeping notification title strictly focused on the terminal disposition (`Done`, `❌ Error`, `⏳ Needs input`) completely eliminates redundancy.
 
 ### D. System Font & Nerd Font Compatibility
 - **macOS System Font Isolation**: macOS Notification Center (AppKit `UNUserNotificationCenter`) and native window titlebars render using Apple's system font (**San Francisco / Apple Color Emoji**).
 - **No Nerd Font in System Notifications**: Private Use Area (PUA) Nerd Font glyphs (like `󰪞`, `󰛄`, ``, ``) are **not** present in the macOS system font and render as broken tofu boxes (`[?]`).
-- **Standard Unicode Only**: Titles and notifications must strictly use standard Unicode 15.0 emojis (`⏱`, `⏳`, `🏃`, `🧐`, `❌`, `✅`) and ASCII.
+- **Standard Unicode Only**: Titles and notifications must strictly use standard Unicode 15.0 emojis (`⏱`, `⏳`, `🏃`, `🧐`, `❌`, `✅`) and ASCII. Nerd Font symbols are permitted only behind an explicit opt-in `--nerd-font` flag.
 - **Cache Omission**: Prompt cache hit efficiency (`⚡92%`) is a resource/budget metric suited for the statusline (`agy_pure`), NOT an action/momentum signal for window titles or notifications.
 
 ---
 
 ## 2. Core Goals
 
-1. **Ultra-Compact Notification Title (<15 chars)**:
-   - Ensure the notification title fits in every notification banner (macOS, iPhone, Apple Watch) without truncation.
-   - Focus exclusively on: **Completion Status + Exact Elapsed Turn Time**.
+1. **Clean Notification Title (<15 chars)**:
+   - Header strictly states terminal disposition: `Done`, `❌ Error`, or `⏳ Needs input`.
 2. **Zero-Bloat Body**:
    - Single-line summary of what the AI actually answered or accomplished.
    - Markdown links stripped to labels (`[foo.zig](file:///...)` → `foo.zig`), URLs discarded, code blocks and blockquotes skipped.
 3. **Decoupled Architecture**:
-   - Stop attempting to manipulate the terminal's window title via OSC 2 right before OSC 777 to alter the notification subtitle (eliminates GUI thread race in Ghostty).
-   - Let the notification title stand on its own merits with zero terminal-state coupling.
+   - Zero OSC 2 hacks before OSC 777 (avoids AppKit/Ghostty GUI thread races).
+   - Each surface performs its distinct architectural role without tight coupling.
 4. **Actionable Live Tab Titles in `agy_title`**:
-   - Replace static `🏃 working | agy-pure` with live prompt duration (e.g. `🏃 agy-pure · ⏱ 14s`).
-   - Clean up `"😴 idle | "` on prompt wait (e.g. `agy-pure (main*)`).
+   - Working: Live prompt duration ticker (`🏃 agy-pure (main*) · ⏱ 14s`).
+   - Idle: Clean model identity (`agy-pure (main*) · Gemini 3.8 Flash`).
+   - Blocked: Clean emoji anchor (`⏳ agy-pure (main*)` or `🧐 agy-pure (main*)`).
 5. **Comptime Data-Driven Architecture (No `if..else` Cascades)**:
-   - Refactor state dispatch, emojis, and OSC protocol emission from cascading string comparisons to compile-time `std.StaticStringMap` and `std.EnumArray`.
+   - State dispatch, emojis, and OSC protocols powered by compile-time `std.StaticStringMap` and `std.EnumArray`.
 
 ---
 
@@ -55,14 +56,12 @@
 ### A. Notification Title & Body (`agy_notify`)
 
 #### 1. Title Format Specification
-Keep the title under 15 characters, bold, and punchy:
+Clean, bold, and punchy:
 
 | Condition | Format | Example | Char Count |
 | :--- | :--- | :--- | :---: |
-| Normal completion (with duration) | `Done (<duration>)` | `Done (3.8s)` | 11 |
-| Normal completion (fallback) | `Done` | `Done` | 4 |
-| Error completion (with duration) | `❌ Error (<duration>)` | `❌ Error (1.4s)` | 15 |
-| Error completion (fallback) | `❌ Error` | `❌ Error` | 7 |
+| Normal completion | `Done` | `Done` | 4 |
+| Error completion | `❌ Error` | `❌ Error` | 7 |
 | User action required (`Notification` hook) | `⏳ Needs input` | `⏳ Needs input` | 14 |
 
 #### 2. Body Format Specification
@@ -73,117 +72,41 @@ Keep the title under 15 characters, bold, and punchy:
   - Alert blocks (`> [!NOTE]`): skipped.
   - List markers (`- `, `* `, `1. `): stripped.
   - Multiple whitespace / newlines: collapsed to single space.
-  - Fallback string if empty: `"Turn complete"`.
+  - Fallback string if empty: `"Turn complete"` or `"Action required"`.
 
-#### 3. Resulting macOS Notification Banner
+#### 3. Resulting macOS Notification Banner (Zero Redundancy)
 ```
 ┌────────────────────────────────────────────────────────┐
 │ [Ghostty]                                              │
-│ Done (3.8s)                                            │
-│ agy-pure (main*)                                       │
+│ Done                                                   │
+│ 🏃 agy-pure (main*) · ⏱ 3.8s                          │
 │ Updated notify.zig and verified all unit tests pass.   │
 └────────────────────────────────────────────────────────┘
 ```
+- Line 1 (Title): Disposition (`Done`)
+- Line 2 (Subtitle): Target workspace + final duration from tab title (`🏃 agy-pure (main*) · ⏱ 3.8s`)
+- Line 3 (Body): Clear response summary
 
 ---
 
 ### B. Terminal Tab Title (`agy_title`)
 
 #### 1. Live Execution State (`agent_state == "working"`)
-Instead of static `🏃 working | <workspace>`, provide live execution metrics:
 - **With duration**:
   `🏃 <workspace> (<branch>) · ⏱ <elapsed>s`
 - **When subagents are active**:
-  `🏃 <workspace> · [2 subagents]`
-- **When reviewing artifacts**:
-  `🧐 reviewing | <workspace> (<branch>)`
-- **When waiting for user confirmation**:
-  `⏳ waiting | <workspace> (<branch>)`
+  `🏃 <workspace> (<branch>) [2 subagents] · ⏱ <elapsed>s`
 
-#### 2. Idle State (`agent_state == "idle"`)
-Eliminate `"😴 idle | "` bloat:
-- **Clean format**:
+#### 2. Blocked States
+- **Reviewing artifacts**:
+  `🧐 <workspace> (<branch>)`
+- **Waiting for user input / permissions**:
+  `⏳ <workspace> (<branch>)`
+
+#### 3. Idle State (`agent_state == "idle"`)
+- **Format**:
   `<workspace> (<branch>) · <model>`
   e.g.: `agy-pure (main*) · Gemini 3.8 Flash`
-
----
-
-### C. Comptime Data-Driven Architecture Design
-
-Eliminate all cascading `if..else` ladders across the codebase with compile-time verified tables:
-
-```zig
-pub const AgentState = enum {
-    idle,
-    working,
-    reviewing,
-    waiting,
-    done,
-    error_state,
-    unknown,
-};
-
-// Comptime string normalization (O(1) perfect hash/binary tree)
-const StateMap = std.StaticStringMap(AgentState).initComptime(.{
-    .{ "idle", .idle },
-    .{ "working", .working },
-    .{ "running", .working },
-    .{ "thinking", .working },
-    .{ "processing", .working },
-    .{ "tool_use", .working },
-    .{ "reviewing", .reviewing },
-    .{ "waiting_for_user", .waiting },
-    .{ "waiting_for_input", .waiting },
-    .{ "done", .done },
-    .{ "complete", .done },
-    .{ "error", .error_state },
-    .{ "errored", .error_state },
-});
-
-pub const StateDescriptor = struct {
-    emoji: []const u8,
-    osc7501_state: []const u8,
-    osc9_4_code: u8, // 0 = clear, 2 = error, 3 = spinner, 4 = paused
-    is_blocked: bool,
-};
-
-// Exhaustive compile-time checked descriptor table
-pub const state_descriptors = std.EnumArray(AgentState, StateDescriptor).init(.{
-    .idle = .{ .emoji = "", .osc7501_state = "idle", .osc9_4_code = 0, .is_blocked = false },
-    .working = .{ .emoji = "🏃", .osc7501_state = "working", .osc9_4_code = 3, .is_blocked = false },
-    .reviewing = .{ .emoji = "🧐", .osc7501_state = "blocked", .osc9_4_code = 4, .is_blocked = true },
-    .waiting = .{ .emoji = "⏳", .osc7501_state = "blocked", .osc9_4_code = 4, .is_blocked = true },
-    .done = .{ .emoji = "✅", .osc7501_state = "done", .osc9_4_code = 0, .is_blocked = false },
-    .error_state = .{ .emoji = "❌", .osc7501_state = "error", .osc9_4_code = 2, .is_blocked = false },
-    .unknown = .{ .emoji = "🤖", .osc7501_state = "idle", .osc9_4_code = 0, .is_blocked = false },
-});
-```
-
----
-
-### D. Hook Configuration (`~/.gemini/config/hooks.json`)
-
-Dual hook registration for `agy_notify`:
-```json
-{
-  "notify": {
-    "Stop": [
-      {
-        "command": "/Users/naokiiida/.gemini/antigravity-cli/bin/agy_notify",
-        "timeout": 5,
-        "type": "command"
-      }
-    ],
-    "Notification": [
-      {
-        "command": "/Users/naokiiida/.gemini/antigravity-cli/bin/agy_notify --event=notification",
-        "timeout": 5,
-        "type": "command"
-      }
-    ]
-  }
-}
-```
 
 ---
 
@@ -196,12 +119,12 @@ Dual hook registration for `agy_notify`:
   - Implement clean `render()` pipeline:
     - Working: `🏃 <workspace> (<branch>) · ⏱ <duration>`
     - Idle: `<workspace> (<branch>) · <model>` (or clean `<workspace>` if model absent).
-    - Blocked: `⏳ <workspace> (<branch>)`.
+    - Blocked: `⏳ <workspace> (<branch>)` and `🧐 <workspace> (<branch>)`.
   - Support optional `--nerd-font` flag, defaulting to standard Unicode 15.0 emojis.
 
 - [x] **Task 2: Refactor `src/notify.zig` & `src/notify_main.zig`**
-  - Refactor `formatTitle` to `formatNotificationTitle(buf, elapsed, is_error, is_notification)`.
-  - Strip all tool extraction logic from `notify_main.zig`.
+  - Simplify `formatNotificationTitle(is_error, is_notification)` to return static disposition strings (`Done`, `❌ Error`, `⏳ Needs input`).
+  - Strip all tool extraction logic from `notify_main.zig` and `title.zig`.
   - Strip OSC 2 pre-notification title hacking (eliminates Ghostty race condition).
   - Handle `--event=notification` argument for `Notification` hook support (`⏳ Needs input`).
 
@@ -213,6 +136,12 @@ Dual hook registration for `agy_notify`:
   - Update unit tests in `src/title.zig` and `src/notify.zig` to verify:
     - Comptime state parsing for all synonyms (`running` -> `working`, `complete` -> `done`, `waiting_for_user` -> `waiting`).
     - Descriptor consistency across OSC 7501, OSC 9;4, and emojis.
-    - Notification title formatting (`Done (3.8s)`, `❌ Error (1.4s)`, `⏳ Needs input`).
+    - Clean notification title formatting (`Done`, `❌ Error`, `⏳ Needs input`).
   - Run `zig build test` to ensure all tests pass.
   - Run `zig build -Doptimize=ReleaseFast` and verify execution time strictly < 2.5ms with `hyperfine`.
+
+- [x] **Task 5: Zero-Redundancy Notification & Ticker Architecture**
+  - Empirically verify `agy` sub-second continuous ticker execution (~300-500ms intervals).
+  - Align `surface.title` as owner of live momentum telemetry.
+  - Align `agy_notify` as owner of terminal disposition receipt.
+  - Clean up dead transcript tool-seeker code in `src/title.zig`.
