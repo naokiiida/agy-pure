@@ -73,14 +73,11 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    const body = summary_alloc orelse "Turn complete, ready for input.";
+    const body = summary_alloc orelse "Turn complete";
 
-    // Title construction
+    // Title construction (zero bloat: clean project name or error indicator)
     var title_buf: [128]u8 = undefined;
-    const title = if (is_error)
-        std.fmt.bufPrint(&title_buf, "❌ Error | {s}", .{workspace}) catch "❌ Error"
-    else
-        std.fmt.bufPrint(&title_buf, "😴 idle | {s}", .{workspace}) catch "😴 idle";
+    const title = agy_pure.notify.formatTitle(&title_buf, workspace, is_error);
 
     // Format OSC 777 escape sequence into stack buffer
     var osc_buf: [512]u8 = undefined;

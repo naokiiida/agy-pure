@@ -58,8 +58,7 @@ pub fn cleanSummary(allocator: std.mem.Allocator, raw: []const u8, max_len: usiz
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
-    var in_tag = false;
-    var i: usize = 0;
+    var in_code_block = false;
 
     // First, find the first non-empty meaningful line
     var line_start: usize = 0;
@@ -68,18 +67,93 @@ pub fn cleanSummary(allocator: std.mem.Allocator, raw: []const u8, max_len: usiz
         while (line_end < raw.len and raw[line_end] != '\n' and raw[line_end] != '\r') : (line_end += 1) {}
         const line = std.mem.trim(u8, raw[line_start..line_end], " \t\r");
 
-        // Skip markdown headings markers, tags, empty lines, dividers, or code block markers
+        // Toggle and skip code block fences and contents
+        if (std.mem.startsWith(u8, line, "```")) {
+            in_code_block = !in_code_block;
+            line_start = if (line_end < raw.len and raw[line_end] == '\r' and line_end + 1 < raw.len and raw[line_end + 1] == '\n')
+                line_end + 2
+            else
+                line_end + 1;
+            continue;
+        }
+
+        if (in_code_block) {
+            line_start = if (line_end < raw.len and raw[line_end] == '\r' and line_end + 1 < raw.len and raw[line_end + 1] == '\n')
+                line_end + 2
+            else
+                line_end + 1;
+            continue;
+        }
+
+        // Skip markdown headings markers, tags, empty lines, dividers, blockquotes/alerts
         if (line.len > 0 and
             !std.mem.startsWith(u8, line, "<") and
             !std.mem.startsWith(u8, line, "#") and
-            !std.mem.startsWith(u8, line, "```") and
             !std.mem.startsWith(u8, line, "---") and
-            !std.mem.startsWith(u8, line, "==="))
+            !std.mem.startsWith(u8, line, "===") and
+            !std.mem.startsWith(u8, line, ">"))
         {
-            // Clean this line
-            i = 0;
-            while (i < line.len) : (i += 1) {
-                const c = line[i];
+            var content = line;
+            // Strip leading bullet markers (- , * , + )
+            if (content.len >= 2 and (content[0] == '-' or content[0] == '*' or content[0] == '+') and content[1] == ' ') {
+                content = std.mem.trimStart(u8, content[2..], " ");
+            } else {
+                // Strip numbered list markers (e.g. "1. ", "12. ")
+                var num_idx: usize = 0;
+                while (num_idx < content.len and std.ascii.isDigit(content[num_idx])) : (num_idx += 1) {}
+                if (num_idx > 0 and num_idx + 1 < content.len and content[num_idx] == '.' and content[num_idx + 1] == ' ') {
+                    content = std.mem.trimStart(u8, content[num_idx + 2..], " ");
+                }
+            }
+
+            var in_tag = false;
+            var i: usize = 0;
+            while (i < content.len) {
+                // Check for image tag: ![alt](url) -> skip completely
+                if (content[i] == '!' and i + 1 < content.len and content[i + 1] == '[') {
+                    const close_bracket = std.mem.indexOfScalarPos(u8, content, i + 2, ']');
+                    if (close_bracket) |cb| {
+                        if (cb + 1 < content.len and content[cb + 1] == '(') {
+                            const close_paren = std.mem.indexOfScalarPos(u8, content, cb + 2, ')');
+                            if (close_paren) |cp| {
+                                i = cp + 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                // Check for markdown link: [label](url) -> keep label, skip (url)
+                if (content[i] == '[') {
+                    const close_bracket = std.mem.indexOfScalarPos(u8, content, i + 1, ']');
+                    if (close_bracket) |cb| {
+                        if (cb + 1 < content.len and content[cb + 1] == '(') {
+                            const close_paren = std.mem.indexOfScalarPos(u8, content, cb + 2, ')');
+                            if (close_paren) |cp| {
+                                const label = content[i + 1 .. cb];
+                                for (label) |lc| {
+                                    if (lc == '#' or lc == '*' or lc == '`') continue;
+                                    if (lc == ';') {
+                                        try out.append(allocator, ',');
+                                    } else if (lc == ' ' or lc == '\t') {
+                                        if (out.items.len > 0 and out.items[out.items.len - 1] != ' ') {
+                                            try out.append(allocator, ' ');
+                                        }
+                                    } else if (lc >= 32 and lc != 127) {
+                                        try out.append(allocator, lc);
+                                    }
+                                    if (out.items.len >= max_len) break;
+                                }
+                                i = cp + 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                const c = content[i];
+                i += 1;
+
                 if (c == '<') {
                     in_tag = true;
                     continue;
@@ -89,20 +163,28 @@ pub fn cleanSummary(allocator: std.mem.Allocator, raw: []const u8, max_len: usiz
                 }
                 if (in_tag) continue;
 
-                // Strip markdown formatting characters
-                if (c == '#' or c == '*' or c == '`' or c == '_') continue;
+                // Strip markdown formatting characters (preserve '_' for identifiers like notify_main.zig)
+                if (c == '#' or c == '*' or c == '`') continue;
+
+                // Collapse whitespace
+                if (c == ' ' or c == '\t') {
+                    if (out.items.len > 0 and out.items[out.items.len - 1] != ' ') {
+                        try out.append(allocator, ' ');
+                    }
+                    continue;
+                }
 
                 // Replace semicolons with commas because OSC 777 uses ';' as field delimiter
                 if (c == ';') {
                     try out.append(allocator, ',');
-                } else {
+                } else if (c >= 32 and c != 127) {
                     try out.append(allocator, c);
                 }
 
                 if (out.items.len >= max_len) break;
             }
 
-            const trimmed = std.mem.trim(u8, out.items, " \t-*>");
+            const trimmed = std.mem.trim(u8, out.items, " \t-*>,;:");
             if (trimmed.len > 0) {
                 // If trimmed to max_len, add ellipsis if truncated
                 if (out.items.len >= max_len and max_len > 3) {
@@ -126,7 +208,7 @@ pub fn cleanSummary(allocator: std.mem.Allocator, raw: []const u8, max_len: usiz
     }
 
     out.deinit(allocator);
-    return try allocator.dupe(u8, "Turn complete, ready for input.");
+    return try allocator.dupe(u8, "Turn complete");
 }
 
 /// Reads the last response content from transcript.jsonl near the end of the file.
@@ -196,6 +278,24 @@ pub fn extractLastResponse(allocator: std.mem.Allocator, transcript_path: []cons
     return null;
 }
 
+/// Formats notification title: clean workspace name or error indicator without state bloat.
+pub fn formatTitle(buf: []u8, workspace: []const u8, is_error: bool) []const u8 {
+    const has_workspace = workspace.len > 0 and !std.mem.eql(u8, workspace, "unknown");
+    if (is_error) {
+        if (has_workspace) {
+            return std.fmt.bufPrint(buf, "❌ {s}", .{workspace}) catch "❌ Error";
+        } else {
+            return "❌ Error";
+        }
+    } else {
+        if (has_workspace) {
+            return std.fmt.bufPrint(buf, "{s}", .{workspace}) catch "Antigravity";
+        } else {
+            return "Antigravity";
+        }
+    }
+}
+
 /// Formats the OSC 777 sequence: \x1b]777;notify;{title};{body}\x07
 pub fn formatOsc777(
     writer: anytype,
@@ -254,8 +354,8 @@ test "formatOsc777 writes valid escape code and sanitizes semicolons" {
     var buf: [256]u8 = undefined;
     var sw = StackWriter{ .buf = &buf };
 
-    try formatOsc777(&sw, "idle | Vault;extra", "Done; ready for input");
-    try std.testing.expectEqualStrings("\x1b]777;notify;idle | Vault,extra;Done, ready for input\x07", sw.getWritten());
+    try formatOsc777(&sw, "Vault;extra", "Turn; complete");
+    try std.testing.expectEqualStrings("\x1b]777;notify;Vault,extra;Turn, complete\x07", sw.getWritten());
 }
 
 test "cleanSummary strips tags and trims to length" {
@@ -277,4 +377,76 @@ test "cleanSummary truncates long lines with ellipsis" {
 
     try std.testing.expectEqual(40, summary.len);
     try std.testing.expect(std.mem.endsWith(u8, summary, "..."));
+}
+
+test "cleanSummary strips markdown link URLs keeping only labels" {
+    const allocator = std.testing.allocator;
+    const raw = "Updated [notify.zig](file:///Users/naoki/src/notify.zig) and [notify_main.zig](file:///Users/naoki/src/notify_main.zig) successfully.";
+
+    const summary = try cleanSummary(allocator, raw, 100);
+    defer allocator.free(summary);
+
+    try std.testing.expectEqualStrings("Updated notify.zig and notify_main.zig successfully.", summary);
+}
+
+test "cleanSummary skips blockquotes and alert headers" {
+    const allocator = std.testing.allocator;
+    const raw = "> [!NOTE]\n> Some context notes here\n\nCompleted the implementation task.";
+
+    const summary = try cleanSummary(allocator, raw, 80);
+    defer allocator.free(summary);
+
+    try std.testing.expectEqualStrings("Completed the implementation task.", summary);
+}
+
+test "cleanSummary strips leading bullet and numbered list markers" {
+    const allocator = std.testing.allocator;
+    const raw1 = "- Fixed compiler error in main module.";
+    const summary1 = try cleanSummary(allocator, raw1, 80);
+    defer allocator.free(summary1);
+    try std.testing.expectEqualStrings("Fixed compiler error in main module.", summary1);
+
+    const raw2 = "1.   All tests passed with zero failures.";
+    const summary2 = try cleanSummary(allocator, raw2, 80);
+    defer allocator.free(summary2);
+    try std.testing.expectEqualStrings("All tests passed with zero failures.", summary2);
+}
+
+test "cleanSummary returns fallback on empty or unparseable input" {
+    const allocator = std.testing.allocator;
+    const raw = "### Only Header\n> Only quote\n```zig\ncode only\n```";
+
+    const summary = try cleanSummary(allocator, raw, 80);
+    defer allocator.free(summary);
+
+    try std.testing.expectEqualStrings("Turn complete", summary);
+}
+
+test "cleanSummary strips images and collapses multiple whitespace" {
+    const allocator = std.testing.allocator;
+    const raw = "Here is the result: ![diagram](https://example.com/pic.png)   done with   verification.";
+
+    const summary = try cleanSummary(allocator, raw, 80);
+    defer allocator.free(summary);
+
+    try std.testing.expectEqualStrings("Here is the result: done with verification.", summary);
+}
+
+test "formatTitle returns clean workspace without idle" {
+    var buf: [128]u8 = undefined;
+
+    const normal = formatTitle(&buf, "agy-pure", false);
+    try std.testing.expectEqualStrings("agy-pure", normal);
+
+    const normal_unknown = formatTitle(&buf, "unknown", false);
+    try std.testing.expectEqualStrings("Antigravity", normal_unknown);
+
+    const normal_empty = formatTitle(&buf, "", false);
+    try std.testing.expectEqualStrings("Antigravity", normal_empty);
+
+    const err = formatTitle(&buf, "agy-pure", true);
+    try std.testing.expectEqualStrings("❌ agy-pure", err);
+
+    const err_unknown = formatTitle(&buf, "unknown", true);
+    try std.testing.expectEqualStrings("❌ Error", err_unknown);
 }
