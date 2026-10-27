@@ -22,6 +22,16 @@ pub const Cost = struct {
     total_lines_removed: u64 = 0,
 };
 
+/// Computes prompt cache hit rate percentage (0-100) from cache_read, cache_creation, and input tokens.
+/// Formula: cache_ratio = cache_read_input_tokens / (cache_read + cache_creation + input_tokens)
+pub fn computeCacheHitRate(cache_read: u64, cache_creation: u64, input_tokens: u64) ?u8 {
+    if (cache_read == 0) return null;
+    const total = cache_read + cache_creation + input_tokens;
+    if (total == 0) return null;
+    const pct = (cache_read * 100) / total;
+    return if (pct > 100) 100 else @intCast(pct);
+}
+
 /// Token counts from the current / most recent invocation.
 pub const CurrentUsage = struct {
     input_tokens: u64 = 0,
@@ -38,6 +48,8 @@ pub const ContextWindow = struct {
     used_percentage: ?f64 = null,
     remaining_percentage: ?f64 = null,
     current_usage: ?std.json.Value = null,
+    cache_read_input_tokens: ?u64 = null,
+    cache_creation_input_tokens: ?u64 = null,
 
     pub fn getContextTokens(self: ContextWindow) u64 {
         if (self.current_usage) |val| {
@@ -62,6 +74,46 @@ pub const ContextWindow = struct {
         if (self.total_input_tokens) |t| return t;
         return 0;
     }
+
+    /// Computes prompt cache hit rate percentage from current_usage or context fields.
+    pub fn getCacheHitRate(self: ContextWindow) ?u8 {
+        var read_tokens: u64 = 0;
+        var creation_tokens: u64 = 0;
+        var input_toks: u64 = 0;
+
+        if (self.current_usage) |val| {
+            switch (val) {
+                .object => |obj| {
+                    if (obj.get("cache_read_input_tokens")) |tok| {
+                        if (tok == .integer and tok.integer > 0) read_tokens = @intCast(tok.integer);
+                    } else if (obj.get("cache_read_tokens")) |tok| {
+                        if (tok == .integer and tok.integer > 0) read_tokens = @intCast(tok.integer);
+                    }
+                    if (obj.get("cache_creation_input_tokens")) |tok| {
+                        if (tok == .integer and tok.integer > 0) creation_tokens = @intCast(tok.integer);
+                    } else if (obj.get("cache_creation_tokens")) |tok| {
+                        if (tok == .integer and tok.integer > 0) creation_tokens = @intCast(tok.integer);
+                    }
+                    if (obj.get("input_tokens")) |tok| {
+                        if (tok == .integer and tok.integer > 0) input_toks = @intCast(tok.integer);
+                    }
+                },
+                else => {},
+            }
+        }
+
+        if (read_tokens == 0) {
+            if (self.cache_read_input_tokens) |r| read_tokens = r;
+        }
+        if (creation_tokens == 0) {
+            if (self.cache_creation_input_tokens) |c| creation_tokens = c;
+        }
+        if (input_toks == 0) {
+            if (self.total_input_tokens) |i| input_toks = i;
+        }
+
+        return computeCacheHitRate(read_tokens, creation_tokens, input_toks);
+    }
 };
 
 /// Subagent summary if subagents are active.
@@ -69,6 +121,170 @@ pub const Subagent = struct {
     role: ?[]const u8 = null,
     state: ?[]const u8 = null,
 };
+
+pub fn mapSubagentEmoji(role: []const u8, state: []const u8) []const u8 {
+    var lower_buf: [64]u8 = undefined;
+    const len = @min(role.len, lower_buf.len);
+    for (0..len) |i| {
+        lower_buf[i] = std.ascii.toLower(role[i]);
+    }
+    const r = lower_buf[0..len];
+
+    if (std.mem.indexOf(u8, r, "res") != null or std.mem.indexOf(u8, r, "search") != null) {
+        return "🔬";
+    }
+    if (std.mem.indexOf(u8, r, "deb") != null or std.mem.indexOf(u8, r, "bug") != null) {
+        if (std.ascii.eqlIgnoreCase(state, "running") or std.ascii.eqlIgnoreCase(state, "working")) {
+            return "🏃";
+        }
+        return "🐛";
+    }
+    if (std.mem.indexOf(u8, r, "code") != null or std.mem.indexOf(u8, r, "dev") != null) {
+        return "💻";
+    }
+    if (std.mem.indexOf(u8, r, "rev") != null or std.mem.indexOf(u8, r, "audit") != null) {
+        return "🧐";
+    }
+    if (std.mem.indexOf(u8, r, "test") != null) {
+        return "🧪";
+    }
+    if (std.mem.indexOf(u8, r, "plan") != null) {
+        return "📋";
+    }
+    if (std.mem.indexOf(u8, r, "doc") != null or std.mem.indexOf(u8, r, "write") != null) {
+        return "📝";
+    }
+    if (std.ascii.eqlIgnoreCase(state, "thinking")) return "🤔";
+    if (std.ascii.eqlIgnoreCase(state, "tool_use")) return "🛠️";
+    if (std.ascii.eqlIgnoreCase(state, "running") or std.ascii.eqlIgnoreCase(state, "working")) return "🏃";
+    if (std.ascii.eqlIgnoreCase(state, "idle")) return "😴";
+    return "🤖";
+}
+
+pub fn mapSubagentRole(role: []const u8) []const u8 {
+    var lower_buf: [64]u8 = undefined;
+    const len = @min(role.len, lower_buf.len);
+    for (0..len) |i| {
+        lower_buf[i] = std.ascii.toLower(role[i]);
+    }
+    const r = lower_buf[0..len];
+
+    if (std.mem.indexOf(u8, r, "res") != null) return "res";
+    if (std.mem.indexOf(u8, r, "deb") != null) return "deb";
+    if (std.mem.indexOf(u8, r, "dev") != null or std.mem.indexOf(u8, r, "code") != null) return "dev";
+    if (std.mem.indexOf(u8, r, "rev") != null) return "rev";
+    if (std.mem.indexOf(u8, r, "test") != null) return "test";
+    if (std.mem.indexOf(u8, r, "plan") != null) return "plan";
+    if (std.mem.indexOf(u8, r, "doc") != null) return "doc";
+
+    const trimmed = std.mem.trim(u8, r, " _-");
+    if (trimmed.len > 0) {
+        return trimmed[0..@min(trimmed.len, 4)];
+    }
+    return "sub";
+}
+
+/// Formats the subagents badge. If role info is available, formats micro-tree
+/// like `[2 subagents: 🔬 res, 🏃 deb]`, otherwise falls back to `[2 subagents]`.
+pub fn formatSubagents(buf: []u8, session: Session) ?[]const u8 {
+    const total_count = session.countSubagents();
+    if (total_count == 0) return null;
+
+    const val = session.subagents orelse return null;
+
+    var parsed_roles: [8]struct {
+        emoji: []const u8,
+        role: []const u8,
+    } = undefined;
+    var role_count: usize = 0;
+
+    switch (val) {
+        .array => |arr| {
+            for (arr.items) |item| {
+                if (role_count >= parsed_roles.len) break;
+                if (item == .object) {
+                    const obj = item.object;
+                    const r_val = obj.get("role") orelse obj.get("name") orelse obj.get("type");
+                    if (r_val) |rv| {
+                        if (rv == .string and rv.string.len > 0) {
+                            const st_val = obj.get("state") orelse obj.get("status");
+                            const st = if (st_val) |sv| (if (sv == .string) sv.string else "working") else "working";
+                            parsed_roles[role_count] = .{
+                                .emoji = mapSubagentEmoji(rv.string, st),
+                                .role = mapSubagentRole(rv.string),
+                            };
+                            role_count += 1;
+                        }
+                    }
+                }
+            }
+        },
+        .object => |obj| {
+            if (obj.get("subagents")) |sub_arr| {
+                if (sub_arr == .array) {
+                    for (sub_arr.array.items) |item| {
+                        if (role_count >= parsed_roles.len) break;
+                        if (item == .object) {
+                            const o = item.object;
+                            const r_val = o.get("role") orelse o.get("name") orelse o.get("type");
+                            if (r_val) |rv| {
+                                if (rv == .string and rv.string.len > 0) {
+                                    const st_val = o.get("state") orelse o.get("status");
+                                    const st = if (st_val) |sv| (if (sv == .string) sv.string else "working") else "working";
+                                    parsed_roles[role_count] = .{
+                                        .emoji = mapSubagentEmoji(rv.string, st),
+                                        .role = mapSubagentRole(rv.string),
+                                    };
+                                    role_count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                var it = obj.iterator();
+                while (it.next()) |entry| {
+                    if (role_count >= parsed_roles.len) break;
+                    if (entry.value_ptr.* == .object) {
+                        const o = entry.value_ptr.*.object;
+                        const r_val = o.get("role") orelse o.get("name") orelse o.get("type");
+                        if (r_val) |rv| {
+                            if (rv == .string and rv.string.len > 0) {
+                                const st_val = o.get("state") orelse o.get("status");
+                                const st = if (st_val) |sv| (if (sv == .string) sv.string else "working") else "working";
+                                parsed_roles[role_count] = .{
+                                    .emoji = mapSubagentEmoji(rv.string, st),
+                                    .role = mapSubagentRole(rv.string),
+                                };
+                                role_count += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        else => {},
+    }
+
+    if (role_count > 0) {
+        var offset: usize = 0;
+        const prefix = std.fmt.bufPrint(buf[offset..], "[{d} subagent{s}: ", .{ total_count, if (total_count == 1) "" else "s" }) catch return null;
+        offset += prefix.len;
+        for (parsed_roles[0..role_count], 0..) |pr, idx| {
+            if (idx > 0) {
+                const comma = std.fmt.bufPrint(buf[offset..], ", ", .{}) catch return null;
+                offset += comma.len;
+            }
+            const item_str = std.fmt.bufPrint(buf[offset..], "{s} {s}", .{ pr.emoji, pr.role }) catch return null;
+            offset += item_str.len;
+        }
+        const close_str = std.fmt.bufPrint(buf[offset..], "]", .{}) catch return null;
+        offset += close_str.len;
+        return buf[0..offset];
+    }
+
+    return std.fmt.bufPrint(buf, "[{d} subagent{s}]", .{ total_count, if (total_count == 1) "" else "s" }) catch null;
+}
 
 /// Main session state passed via stdin JSON from `agy` (or Claude Code).
 pub const Session = struct {
@@ -81,9 +297,29 @@ pub const Session = struct {
     workspace: ?Workspace = null,
     version: ?[]const u8 = null,
     cost: ?Cost = null,
+    total_cost_usd: ?f64 = null,
+    cost_usd: ?f64 = null,
     context_window: ?ContextWindow = null,
     exceeds_200k_tokens: ?bool = null,
     subagents: ?std.json.Value = null,
+    current_tool: ?std.json.Value = null,
+    active_tool: ?std.json.Value = null,
+    tool: ?std.json.Value = null,
+    tool_name: ?[]const u8 = null,
+
+    /// Retrieves total cost in USD if available (> 0).
+    pub fn getTotalCostUsd(self: Session) ?f64 {
+        if (self.cost) |c| {
+            if (c.total_cost_usd > 0) return c.total_cost_usd;
+        }
+        if (self.total_cost_usd) |c| {
+            if (c > 0) return c;
+        }
+        if (self.cost_usd) |c| {
+            if (c > 0) return c;
+        }
+        return null;
+    }
 
     /// Returns the number of subagents active or registered in the session.
     pub fn countSubagents(self: Session) usize {
@@ -237,4 +473,66 @@ test "parse backward compatible claude payload" {
     try std.testing.expectEqualStrings("claude-session-99", session.getConversationId());
     try std.testing.expectEqualStrings("Claude Sonnet 4.6", session.getModelName());
     try std.testing.expect(!session.isRunning());
+}
+
+test "computeCacheHitRate calculation" {
+    // 8500 read / (8500 read + 500 create + 1000 input) = 85%
+    try std.testing.expectEqual(@as(?u8, 85), computeCacheHitRate(8500, 500, 1000));
+    // 0 read returns null
+    try std.testing.expectEqual(@as(?u8, null), computeCacheHitRate(0, 500, 1000));
+    // 100% hit rate
+    try std.testing.expectEqual(@as(?u8, 100), computeCacheHitRate(1000, 0, 0));
+    // total 0 returns null
+    try std.testing.expectEqual(@as(?u8, null), computeCacheHitRate(0, 0, 0));
+}
+
+test "ContextWindow getCacheHitRate from current_usage object" {
+    const allocator = std.testing.allocator;
+
+    const mock_json =
+        \\{
+        \\  "conversation_id": "test-cache",
+        \\  "cost": {
+        \\    "total_cost_usd": 0.04
+        \\  },
+        \\  "context_window": {
+        \\    "current_usage": {
+        \\      "cache_read_input_tokens": 8500,
+        \\      "cache_creation_input_tokens": 500,
+        \\      "input_tokens": 1000,
+        \\      "output_tokens": 200
+        \\    }
+        \\  }
+        \\}
+    ;
+
+    const parsed = try parse(allocator, mock_json);
+    defer parsed.deinit();
+
+    const session = parsed.value;
+    const cw = session.context_window.?;
+    try std.testing.expectEqual(@as(?u8, 85), cw.getCacheHitRate());
+    try std.testing.expectEqual(@as(?f64, 0.04), session.getTotalCostUsd());
+}
+
+test "formatSubagents micro-tree" {
+    const allocator = std.testing.allocator;
+
+    const mock_json =
+        \\{
+        \\  "conversation_id": "test-subagents",
+        \\  "subagents": [
+        \\    { "role": "researcher", "state": "working" },
+        \\    { "role": "debugger", "state": "running" }
+        \\  ]
+        \\}
+    ;
+
+    const parsed = try parse(allocator, mock_json);
+    defer parsed.deinit();
+
+    var buf: [128]u8 = undefined;
+    const res = formatSubagents(&buf, parsed.value);
+    try std.testing.expect(res != null);
+    try std.testing.expectEqualStrings("[2 subagents: 🔬 res, 🏃 deb]", res.?);
 }

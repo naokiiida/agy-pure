@@ -72,7 +72,13 @@ pub fn main(init: std.process.Init) !void {
     var writer = StdoutWriter{};
 
     if (is_title) {
-        try agy_pure.title.render(&writer, session, .{}, null);
+        var title_config = agy_pure.title.TitleConfig{};
+        if (session.agent_state) |st| {
+            if (std.ascii.eqlIgnoreCase(st, "tool_use")) {
+                title_config.tool_action = agy_pure.title.extractToolAction(input_arena.allocator(), session);
+            }
+        }
+        try agy_pure.title.render(&writer, session, title_config, null);
         return;
     }
 

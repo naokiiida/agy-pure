@@ -38,7 +38,9 @@ Add the `title` configuration block in `~/.gemini/antigravity-cli/settings.json`
 Optional flags supported by `agy_title`:
 - `--no-emoji`: Excludes the leading state emoji (e.g., `working | agy-pure`).
 - `--git`: Appends current Git branch name (e.g., `🏃 working | agy-pure (main)`).
-- `--subagents`: Appends active subagent badge if >0 (e.g., `🏃 working | agy-pure [2 subagents]`).
+- `--subagents`: Appends active subagents (e.g., `🏃 working | agy-pure [2 subagents: 🔬 res, 🏃 deb]`).
+- `--osc-progress`: Emits OSC 7501 & OSC 9;4 terminal escape sequences (default: on).
+- `--no-osc-progress`: Disables OSC 7501 & OSC 9;4 terminal escape sequences.
 
 ---
 

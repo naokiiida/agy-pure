@@ -79,19 +79,31 @@ pub fn main(init: std.process.Init) !void {
     var title_buf: [128]u8 = undefined;
     const title = agy_pure.notify.formatTitle(&title_buf, workspace, is_error);
 
-    // Format OSC 777 escape sequence into stack buffer
-    var osc_buf: [512]u8 = undefined;
+    // Format dual OSC notifications (OSC 777 + OSC 9) into stack buffer
+    var osc_buf: [1024]u8 = undefined;
     var stack_writer = agy_pure.notify.StackWriter{ .buf = &osc_buf };
-    agy_pure.notify.formatOsc777(&stack_writer, title, body) catch {};
+    agy_pure.notify.formatDualOsc(&stack_writer, title, body) catch {};
 
-    const osc_bytes = stack_writer.getWritten();
+    const raw_osc = stack_writer.getWritten();
 
-    // Write directly to /dev/tty so terminal emulator (Ghostty / cmux) displays the notification
-    if (osc_bytes.len > 0) {
-        const tty_fd = std.c.open("/dev/tty", .{ .ACCMODE = .WRONLY });
-        if (tty_fd >= 0) {
-            defer _ = std.c.close(tty_fd);
-            _ = std.c.write(tty_fd, osc_bytes.ptr, osc_bytes.len);
+    // Write directly to /dev/tty so terminal emulator (Ghostty / cmux / WezTerm / iTerm2) displays notification
+    if (raw_osc.len > 0) {
+        var final_buf: [2048]u8 = undefined;
+        var final_writer = agy_pure.notify.StackWriter{ .buf = &final_buf };
+
+        if (agy_pure.notify.isTmux()) {
+            agy_pure.notify.wrapTmux(&final_writer, raw_osc) catch {};
+        } else {
+            final_writer.writeAll(raw_osc) catch {};
+        }
+
+        const out_bytes = final_writer.getWritten();
+        if (out_bytes.len > 0) {
+            const tty_fd = std.c.open("/dev/tty", .{ .ACCMODE = .WRONLY });
+            if (tty_fd >= 0) {
+                defer _ = std.c.close(tty_fd);
+                _ = std.c.write(tty_fd, out_bytes.ptr, out_bytes.len);
+            }
         }
     }
 

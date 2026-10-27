@@ -325,6 +325,55 @@ pub fn formatOsc777(
     try writer.writeAll("\x07");
 }
 
+/// Formats the OSC 9 notification sequence: \x1b]9;{body}\x07
+pub fn formatOsc9(
+    writer: anytype,
+    body: []const u8,
+) !void {
+    try writer.writeAll("\x1b]9;");
+
+    for (body) |c| {
+        if (c >= 32 and c != 127) {
+            try writer.writeByte(c);
+        }
+    }
+
+    try writer.writeAll("\x07");
+}
+
+/// Emits both OSC 777 and OSC 9 notification sequences for universal terminal compatibility
+/// (Ghostty, WezTerm, Kitty, iTerm2, Windows Terminal).
+pub fn formatDualOsc(
+    writer: anytype,
+    title: []const u8,
+    body: []const u8,
+) !void {
+    try formatOsc777(writer, title, body);
+    try formatOsc9(writer, body);
+}
+
+/// Returns true if running inside a tmux session.
+pub fn isTmux() bool {
+    return std.c.getenv("TMUX") != null;
+}
+
+/// Wraps an escape sequence in tmux DCS pass-through:
+/// \x1bPtmux;\x1b<escaped_sequence>\x1b\\ (escaping any inner \x1b as \x1b\x1b).
+pub fn wrapTmux(
+    writer: anytype,
+    raw_sequence: []const u8,
+) !void {
+    try writer.writeAll("\x1bPtmux;");
+    for (raw_sequence) |c| {
+        if (c == 0x1b) {
+            try writer.writeAll("\x1b\x1b");
+        } else {
+            try writer.writeByte(c);
+        }
+    }
+    try writer.writeAll("\x1b\\");
+}
+
 pub const StackWriter = struct {
     buf: []u8,
     len: usize = 0,
@@ -356,6 +405,35 @@ test "formatOsc777 writes valid escape code and sanitizes semicolons" {
 
     try formatOsc777(&sw, "Vault;extra", "Turn; complete");
     try std.testing.expectEqualStrings("\x1b]777;notify;Vault,extra;Turn, complete\x07", sw.getWritten());
+}
+
+test "formatOsc9 writes valid escape code" {
+    var buf: [256]u8 = undefined;
+    var sw = StackWriter{ .buf = &buf };
+
+    try formatOsc9(&sw, "Turn complete");
+    try std.testing.expectEqualStrings("\x1b]9;Turn complete\x07", sw.getWritten());
+}
+
+test "formatDualOsc emits both OSC 777 and OSC 9" {
+    var buf: [512]u8 = undefined;
+    var sw = StackWriter{ .buf = &buf };
+
+    try formatDualOsc(&sw, "agy-pure", "Turn complete");
+    try std.testing.expectEqualStrings("\x1b]777;notify;agy-pure;Turn complete\x07\x1b]9;Turn complete\x07", sw.getWritten());
+}
+
+test "wrapTmux wraps sequence in DCS pass-through and doubles inner escapes" {
+    var buf: [512]u8 = undefined;
+    var sw = StackWriter{ .buf = &buf };
+
+    try wrapTmux(&sw, "\x1b]9;Turn complete\x07");
+    try std.testing.expectEqualStrings("\x1bPtmux;\x1b\x1b]9;Turn complete\x07\x1b\\", sw.getWritten());
+
+    // Dual OSC wrapping: both escapes doubled
+    sw.len = 0;
+    try wrapTmux(&sw, "\x1b]777;notify;A;B\x07\x1b]9;B\x07");
+    try std.testing.expectEqualStrings("\x1bPtmux;\x1b\x1b]777;notify;A;B\x07\x1b\x1b]9;B\x07\x1b\\", sw.getWritten());
 }
 
 test "cleanSummary strips tags and trims to length" {

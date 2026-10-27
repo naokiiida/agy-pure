@@ -74,6 +74,12 @@ fn renderSegment(
                     try writer.writeAll(tok_str);
                     try writer.writeAll(pct_str);
                     try writer.writeAll(p.reset);
+
+                    if (cw.getCacheHitRate()) |cache_pct| {
+                        var cache_buf: [32]u8 = undefined;
+                        const cache_str = std.fmt.bufPrint(&cache_buf, " ⚡{d}%", .{cache_pct}) catch "";
+                        try theme.writeColored(writer, config, p.token_cache_read_fg, cache_str);
+                    }
                 }
             }
         },
@@ -85,12 +91,10 @@ fn renderSegment(
             }
         },
         .cost => {
-            if (session.cost) |cost| {
-                if (cost.total_cost_usd > 0) {
-                    try writeSpace(writer, first);
-                    const cost_str = format.formatCost(&buf1, cost.total_cost_usd);
-                    try theme.writeSymbol(writer, config, p.cost_usd_fg, s.cost_usd, cost_str);
-                }
+            if (session.getTotalCostUsd()) |total_cost| {
+                try writeSpace(writer, first);
+                const cost_str = format.formatCost(&buf1, total_cost);
+                try theme.writeSymbol(writer, config, p.cost_usd_fg, s.cost_usd, cost_str);
             }
         },
         .project => {
@@ -127,10 +131,9 @@ fn renderSegment(
             }
         },
         .subagents => {
-            const count = session.countSubagents();
-            if (count > 0) {
+            var sub_buf: [128]u8 = undefined;
+            if (agy.formatSubagents(&sub_buf, session)) |sub_str| {
                 try writeSpace(writer, first);
-                const sub_str = std.fmt.bufPrint(&buf1, "[{d} subagent{s}]", .{ count, if (count > 1) "s" else "" }) catch "?";
                 try theme.writeColored(writer, config, p.badge_ok_fg, sub_str);
             }
         },
@@ -253,4 +256,28 @@ test "render with timer and context" {
     try std.testing.expect(std.mem.indexOf(u8, out, "54.0K") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "27%") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "4.2s") != null);
+}
+
+test "render with cache efficiency badge and cost" {
+    var tw = TestWriter{};
+
+    const session = agy.Session{
+        .conversation_id = "test-cache-cost",
+        .cwd = "/home/user/project",
+        .model = .{ .id = "gemini-3.8-flash", .display_name = "Gemini 3.8 Flash" },
+        .workspace = .{ .current_dir = "/home/user/project", .project_dir = "/home/user/project" },
+        .cost = .{ .total_cost_usd = 0.04 },
+        .context_window = .{
+            .total_input_tokens = 1000,
+            .cache_read_input_tokens = 8500,
+            .cache_creation_input_tokens = 500,
+            .context_window_size = 200000,
+            .used_percentage = 5.0,
+        },
+    };
+
+    try render(&tw, session, null, null);
+    const out = tw.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, out, "⚡85%") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "$0.04") != null);
 }
