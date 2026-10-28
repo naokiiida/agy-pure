@@ -124,8 +124,8 @@ Window and tab titles serve as **Identity Anchors**, adhering to a clean, zero-c
   `🏃 <workspace> (<branch>) · ⏱ <elapsed>`
   *(e.g., `🏃 agy-pure (main) · ⏱ 14s`)*
 - **Idle** (clean prompt context):
-  `<workspace> (<branch>) · <model>`
-  *(e.g., `agy-pure (main) · Gemini 3.8 Flash`)*
+  `<workspace> (<branch>) · <session title>`
+  *(e.g., `agy-pure (main) · Session Title Generation Feature`)*
 - **Reviewing Artifacts**:
   `🧐 <workspace> (<branch>)`
 - **Waiting for Confirmation**:

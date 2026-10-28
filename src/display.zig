@@ -46,6 +46,12 @@ fn renderSegment(
             const name = session.getModelName();
             try theme.writeColored(writer, config, p.model_name_fg, name);
         },
+        .session_title => {
+            try writeSpace(writer, first);
+            var title_buf: [256]u8 = undefined;
+            const name = session.getSessionTitle(&title_buf) orelse session.getModelName();
+            try theme.writeColored(writer, config, p.session_title_fg, name);
+        },
         .context_icon => {
             if (session.context_window) |cw| {
                 const pct_opt: ?f64 = cw.used_percentage orelse blk: {
@@ -280,4 +286,16 @@ test "render with cache efficiency badge and cost" {
     const out = tw.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, out, "⚡85%") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "$0.04") != null);
+}
+
+test "renderSegment session_title" {
+    var tw = TestWriter{};
+    const session = agy.Session{
+        .title = "Custom Session Work",
+        .model = .{ .id = "gemini-3.8-flash", .display_name = "Gemini 3.8 Flash" },
+    };
+    var first: bool = true;
+    try renderSegment(&tw, .session_title, session, null, null, &first);
+    const out = tw.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, out, "Custom Session Work") != null);
 }

@@ -248,7 +248,7 @@ pub fn render(
             }
         },
         .idle => {
-            // Idle format: <workspace> (<branch>) · <model>. (No "😴 idle | " clutter).
+            // Idle format: <workspace> (<branch>) · <session_title>. (No "😴 idle | " clutter).
             try writer.writeAll(workspace);
             if (config.show_branch) {
                 if (branch_name) |br| {
@@ -259,15 +259,18 @@ pub fn render(
                     }
                 }
             }
-            const model_opt = if (session.model) |m| blk: {
-                if (m.display_name.len > 0) break :blk m.display_name;
-                if (m.id.len > 0) break :blk m.id;
+            var title_buf: [256]u8 = undefined;
+            const title_opt = session.getSessionTitle(&title_buf) orelse blk: {
+                if (session.model) |m| {
+                    if (m.display_name.len > 0) break :blk m.display_name;
+                    if (m.id.len > 0) break :blk m.id;
+                }
                 break :blk null;
-            } else null;
+            };
 
-            if (model_opt) |model_name| {
+            if (title_opt) |title_name| {
                 try writer.writeAll(" · ");
-                try writer.writeAll(model_name);
+                try writer.writeAll(title_name);
             }
             if (config.show_subagents) {
                 var sub_buf: [128]u8 = undefined;
@@ -417,7 +420,27 @@ test "render working title with duration and branch" {
     try std.testing.expectEqualStrings("🏃 agy-pure (main) · ⏱ 14s\n", tw.getWritten());
 }
 
-test "render idle title with model without clutter" {
+test "render idle title with session title" {
+    var tw = TestWriter{};
+
+    const session = agy.Session{
+        .agent_state = "idle",
+        .title = "Session Title Feature",
+        .workspace = .{
+            .project_dir = "/Users/naokiiida/Documents/1_personal/agy-pure",
+            .current_dir = "/Users/naokiiida/Documents/1_personal/agy-pure",
+        },
+        .model = .{
+            .id = "gemini-3.8-flash",
+            .display_name = "Gemini 3.8 Flash",
+        },
+    };
+
+    try render(&tw, session, .{}, null);
+    try std.testing.expectEqualStrings("agy-pure · Session Title Feature\n", tw.getWritten());
+}
+
+test "render idle title with model fallback without clutter" {
     var tw = TestWriter{};
 
     const session = agy.Session{

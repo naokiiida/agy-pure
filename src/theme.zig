@@ -33,6 +33,7 @@ pub const Symbols = struct {
 
 pub const Palette = struct {
     model_name_fg: []const u8,
+    session_title_fg: []const u8,
     model_id_fg: []const u8,
     version_fg: []const u8,
     directory_fg: []const u8,
@@ -112,6 +113,7 @@ pub const symbols_plain = Symbols{
 
 pub const palette_vague = Palette{
     .model_name_fg = ansi256(146), // muted teal
+    .session_title_fg = ansi256(146),
     .model_id_fg = ansi256_dim(103),
     .version_fg = ansi256(180),
     .directory_fg = ansi256(110), // soft blue
@@ -150,6 +152,7 @@ pub const palette_vague = Palette{
 
 pub const palette_monokai = Palette{
     .model_name_fg = ansi256(141), // purple
+    .session_title_fg = ansi256(141),
     .model_id_fg = ansi256_dim(104),
     .version_fg = ansi256(208),
     .directory_fg = ansi256(81), // cyan
@@ -188,6 +191,7 @@ pub const palette_monokai = Palette{
 
 pub const palette_tokyo_night = Palette{
     .model_name_fg = ansi256(111), // soft cornflower blue
+    .session_title_fg = ansi256(111),
     .model_id_fg = ansi256_dim(103),
     .version_fg = ansi256(179),
     .directory_fg = ansi256(117), // sky cyan

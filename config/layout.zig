@@ -1,6 +1,7 @@
 const Segment = @import("agy_pure").segments.Segment;
 
 /// Line 1 segments rendered left to right separated by spaces.
+/// Available segments: .model, .session_title, .context_icon, .timer, .cost, .project, .git, .lines, .subagents
 pub const line1: []const Segment = &.{
     .model,
     .context_icon,

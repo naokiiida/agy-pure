@@ -26,7 +26,7 @@ Every contribution to `agy-pure` must strictly adhere to these four architectura
 
 ### D. Identity Anchoring over Status Clutter
 - Window/tab titles are **Identity Anchors**, not full status dashboards.
-- Idle format: `<workspace> (<branch>) · <model>`. (No `"😴 idle | "` clutter).
+- Idle format: `<workspace> (<branch>) · <session title>`. (No `"😴 idle | "` clutter).
 - Working format: `🏃 <workspace> (<branch>) · ⏱ <duration>`.
 - Blocked format: `⏳ <workspace> (<branch>)`.
 - Resource telemetry (token counts, cache hit %, cost, subagent trees) belongs in `statusLine`, not in the window title.

@@ -44,7 +44,7 @@
    - Each surface performs its distinct architectural role without tight coupling.
 4. **Actionable Live Tab Titles in `agy_title`**:
    - Working: Live prompt duration ticker (`🏃 agy-pure (main*) · ⏱ 14s`).
-   - Idle: Clean model identity (`agy-pure (main*) · Gemini 3.8 Flash`).
+   - Idle: Clean session identity (`agy-pure (main*) · Session Title Generation Feature`).
    - Blocked: Clean emoji anchor (`⏳ agy-pure (main*)` or `🧐 agy-pure (main*)`).
 5. **Comptime Data-Driven Architecture (No `if..else` Cascades)**:
    - State dispatch, emojis, and OSC protocols powered by compile-time `std.StaticStringMap` and `std.EnumArray`.
@@ -105,8 +105,8 @@ Clean, bold, and punchy:
 
 #### 3. Idle State (`agent_state == "idle"`)
 - **Format**:
-  `<workspace> (<branch>) · <model>`
-  e.g.: `agy-pure (main*) · Gemini 3.8 Flash`
+  `<workspace> (<branch>) · <session_title>`
+  e.g.: `agy-pure (main*) · Session Title Generation Feature` (falling back to model name if title not yet generated).
 
 ---
 
@@ -145,3 +145,9 @@ Clean, bold, and punchy:
   - Align `surface.title` as owner of live momentum telemetry.
   - Align `agy_notify` as owner of terminal disposition receipt.
   - Clean up dead transcript tool-seeker code in `src/title.zig`.
+
+- [x] **Task 6: Session Title Integration (`agy_title` & optional `agy_pure` segment)**
+  - Implement zero-allocation `parsePbtxtTitle` and `getSessionTitle` in `src/agy.zig` reading `<appDataDir>/annotations/<id>.pbtxt`.
+  - Update `src/title.zig` idle format to `<workspace> (<branch>) · <session_title>` (with fallback to model name).
+  - Add optional `.session_title` segment to `src/segments.zig` and `src/display.zig` while retaining `.model` by default in statusline.
+  - Verified sub-2.5ms execution budget and 100% test pass.

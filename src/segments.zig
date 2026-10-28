@@ -2,6 +2,7 @@
 pub const Segment = enum {
     // ── Line 1 segments ──
     model,
+    session_title,
     context_icon,
     timer,
     cost,

@@ -292,6 +292,38 @@ pub fn formatSubagents(buf: []u8, session: Session) ?[]const u8 {
     return std.fmt.bufPrint(buf, "[{d} subagent{s}]", .{ total_count, if (total_count == 1) "" else "s" }) catch null;
 }
 
+/// Parses a protobuf text format string like `title:"Some Title"` and extracts the unquoted title.
+pub fn parsePbtxtTitle(content: []const u8, out_buf: []u8) ?[]const u8 {
+    const key = "title";
+    const key_pos = std.mem.indexOf(u8, content, key) orelse return null;
+    var idx = key_pos + key.len;
+    while (idx < content.len and (content[idx] == ' ' or content[idx] == '\t' or content[idx] == ':')) : (idx += 1) {}
+    if (idx >= content.len or content[idx] != '"') return null;
+    idx += 1;
+    const title_start = idx;
+    while (idx < content.len and content[idx] != '"') : (idx += 1) {
+        if (content[idx] == '\\' and idx + 1 < content.len) {
+            idx += 1;
+        }
+    }
+    if (idx > content.len) return null;
+    const raw_title = content[title_start..idx];
+    if (raw_title.len == 0 or raw_title.len > out_buf.len) return null;
+
+    var out_len: usize = 0;
+    var i: usize = 0;
+    while (i < raw_title.len) : (i += 1) {
+        if (raw_title[i] == '\\' and i + 1 < raw_title.len) {
+            i += 1;
+        }
+        if (out_len < out_buf.len) {
+            out_buf[out_len] = raw_title[i];
+            out_len += 1;
+        }
+    }
+    return out_buf[0..out_len];
+}
+
 /// Main session state passed via stdin JSON from `agy` (or Claude Code).
 pub const Session = struct {
     conversation_id: ?[]const u8 = null,
@@ -300,6 +332,8 @@ pub const Session = struct {
     cwd: ?[]const u8 = null,
     agent_state: ?[]const u8 = null, // "running", "idle", "waiting_for_user"
     model: ?Model = null,
+    title: ?[]const u8 = null,
+    session_title: ?[]const u8 = null,
     workspace: ?Workspace = null,
     version: ?[]const u8 = null,
     cost: ?Cost = null,
@@ -373,6 +407,61 @@ pub const Session = struct {
             if (w.project_dir.len > 0) return w.project_dir;
         }
         return self.getCwd();
+    }
+
+    /// Retrieves session title if available:
+    /// 1. Checks explicit JSON fields (title, session_title).
+    /// 2. Reads ~/.gemini/antigravity-cli/annotations/<conversation_id>.pbtxt (or fallback ~/.gemini/antigravity/...).
+    pub fn getSessionTitle(self: Session, out_buf: []u8) ?[]const u8 {
+        if (self.title) |t| {
+            if (t.len > 0 and t.len <= out_buf.len) {
+                @memcpy(out_buf[0..t.len], t);
+                return out_buf[0..t.len];
+            }
+        }
+        if (self.session_title) |t| {
+            if (t.len > 0 and t.len <= out_buf.len) {
+                @memcpy(out_buf[0..t.len], t);
+                return out_buf[0..t.len];
+            }
+        }
+
+        const conv_id = self.getConversationId();
+        if (std.mem.eql(u8, conv_id, "default")) return null;
+
+        const home = std.c.getenv("HOME") orelse return null;
+        const home_str = std.mem.span(home);
+
+        const candidate_dirs = [_][]const u8{
+            "/.gemini/antigravity-cli/annotations",
+            "/.gemini/antigravity/annotations",
+        };
+
+        var path_buf: [512]u8 = undefined;
+
+        for (candidate_dirs) |sub_dir| {
+            const full_path = std.fmt.bufPrint(path_buf[0 .. path_buf.len - 1], "{s}{s}/{s}.pbtxt", .{
+                home_str,
+                sub_dir,
+                conv_id,
+            }) catch continue;
+            path_buf[full_path.len] = 0;
+            const c_path: [:0]const u8 = path_buf[0..full_path.len :0];
+
+            const fd = std.c.open(c_path, .{ .ACCMODE = .RDONLY });
+            if (fd < 0) continue;
+            defer _ = std.c.close(fd);
+
+            var content_buf: [256]u8 = undefined;
+            const n = std.c.read(fd, &content_buf, content_buf.len);
+            if (n <= 0) continue;
+
+            if (parsePbtxtTitle(content_buf[0..@intCast(n)], out_buf)) |parsed_title| {
+                return parsed_title;
+            }
+        }
+
+        return null;
     }
 
     /// Retrieves model display name (e.g., "Gemini 3.8 Flash").
@@ -543,4 +632,42 @@ test "agy re-exports state_descriptors and AgentState correctly" {
     const desc = state_descriptors.get(.working);
     try std.testing.expectEqualStrings("🏃", desc.emoji);
     try std.testing.expectEqual(AgentState.working, parseState("thinking"));
+}
+
+test "parsePbtxtTitle extracts title correctly" {
+    var buf: [128]u8 = undefined;
+
+    // Standard protobuf text format
+    const t1 = parsePbtxtTitle("title:\"Session Title Generation Feature\"", &buf);
+    try std.testing.expect(t1 != null);
+    try std.testing.expectEqualStrings("Session Title Generation Feature", t1.?);
+
+    // With spaces
+    const t2 = parsePbtxtTitle("  title : \"Fixing Eternal Terminal NixOS Build Error\"  ", &buf);
+    try std.testing.expect(t2 != null);
+    try std.testing.expectEqualStrings("Fixing Eternal Terminal NixOS Build Error", t2.?);
+
+    // Unicode / Japanese
+    const t3 = parsePbtxtTitle("title:\"象印炊飯器のH02エラーについて\"", &buf);
+    try std.testing.expect(t3 != null);
+    try std.testing.expectEqualStrings("象印炊飯器のH02エラーについて", t3.?);
+
+    // Escaped character
+    const t4 = parsePbtxtTitle("title:\"Refactor \\\"Pure\\\" Engine\"", &buf);
+    try std.testing.expect(t4 != null);
+    try std.testing.expectEqualStrings("Refactor \"Pure\" Engine", t4.?);
+
+    // Missing title or invalid format
+    try std.testing.expect(parsePbtxtTitle("status: OK", &buf) == null);
+    try std.testing.expect(parsePbtxtTitle("title:", &buf) == null);
+}
+
+test "getSessionTitle from explicit JSON field" {
+    const session = Session{
+        .title = "Explicit Session Title",
+    };
+    var buf: [128]u8 = undefined;
+    const t = session.getSessionTitle(&buf);
+    try std.testing.expect(t != null);
+    try std.testing.expectEqualStrings("Explicit Session Title", t.?);
 }
