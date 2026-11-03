@@ -24,6 +24,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
 
     mod.addOptions("config", options);
@@ -42,6 +43,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "agy_pure", .module = mod },
                 .{ .name = "layout", .module = layout_module },
@@ -57,6 +59,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/title_main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "agy_pure", .module = mod },
             },
@@ -71,6 +74,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/notify_main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true,
             .imports = &.{
                 .{ .name = "agy_pure", .module = mod },
             },
@@ -118,8 +122,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_notify_tests.step);
 
     // Install step for ~/.gemini/antigravity-cli/bin
-    const home_env = std.c.getenv("HOME");
-    const home_str = if (home_env) |h| std.mem.sliceTo(h, 0) else "";
+    const home_str = b.graph.environ_map.get("HOME") orelse "";
     const default_cli_bin = b.fmt("{s}/.gemini/antigravity-cli/bin", .{home_str});
     const install_dir = b.option([]const u8, "install-dir", "Destination directory for install-cli step (default: ~/.gemini/antigravity-cli/bin)") orelse default_cli_bin;
 
