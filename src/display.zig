@@ -14,18 +14,138 @@ const s = config.symbols;
 var buf1: [64]u8 = undefined;
 var buf2: [64]u8 = undefined;
 
-/// Renders the complete status line driven by config/layout.zig.
+const BufferStream = struct {
+    buf: []u8,
+    pos: usize = 0,
+
+    pub fn init(buf: []u8) BufferStream {
+        return .{ .buf = buf, .pos = 0 };
+    }
+
+    pub fn writeAll(self: *BufferStream, bytes: []const u8) !void {
+        if (self.pos + bytes.len > self.buf.len) return error.NoSpaceLeft;
+        @memcpy(self.buf[self.pos .. self.pos + bytes.len], bytes);
+        self.pos += bytes.len;
+    }
+
+    pub fn getWritten(self: *const BufferStream) []const u8 {
+        return self.buf[0..self.pos];
+    }
+};
+
+const spaces_chunk = "                                                                "; // 64 spaces
+
+fn writePadding(writer: anytype, count: usize) !void {
+    var remaining = count;
+    while (remaining > 0) {
+        const take = @min(remaining, spaces_chunk.len);
+        try writer.writeAll(spaces_chunk[0..take]);
+        remaining -= take;
+    }
+}
+
+/// Determines terminal width (in columns):
+/// 1. Uses explicit override_width if provided (> 0).
+/// 2. Reads $COLUMNS environment variable.
+/// 3. Queries ioctl(1, TIOCGWINSZ, &ws) on stdout.
+/// 4. Queries ioctl on /dev/tty directly (handles piped stdout when invoked by agy/Claude Code).
+/// 5. Defaults to fallback 80 columns.
+pub fn getTerminalWidth(override_width: ?u16) u16 {
+    if (override_width) |w| {
+        if (w > 0) return w;
+    }
+
+    if (std.c.getenv("COLUMNS")) |col_ptr| {
+        const col_str = std.mem.span(col_ptr);
+        if (std.fmt.parseInt(u16, col_str, 10)) |w| {
+            if (w > 0) return w;
+        } else |_| {}
+    }
+
+    var ws: std.posix.winsize = .{ .row = 0, .col = 0, .xpixel = 0, .ypixel = 0 };
+
+    // Try stdout (fd 1), stderr (fd 2), stdin (fd 0)
+    if (std.c.ioctl(1, std.posix.T.IOCGWINSZ, @intFromPtr(&ws)) == 0 and ws.col > 0) {
+        return ws.col;
+    }
+    if (std.c.ioctl(2, std.posix.T.IOCGWINSZ, @intFromPtr(&ws)) == 0 and ws.col > 0) {
+        return ws.col;
+    }
+    if (std.c.ioctl(0, std.posix.T.IOCGWINSZ, @intFromPtr(&ws)) == 0 and ws.col > 0) {
+        return ws.col;
+    }
+
+    // When agy/Claude Code invokes statusLine as a subprocess, stdout/stdin are pipes (ENOTTY).
+    // Opening /dev/tty (the controlling terminal) returns the real live window width.
+    const tty_fd = std.c.open("/dev/tty", .{ .ACCMODE = .RDONLY });
+    if (tty_fd >= 0) {
+        defer _ = std.c.close(tty_fd);
+        if (std.c.ioctl(tty_fd, std.posix.T.IOCGWINSZ, @intFromPtr(&ws)) == 0 and ws.col > 0) {
+            return ws.col;
+        }
+    }
+
+    return 80;
+}
+
+const has_split_layout = @hasDecl(layout, "left") and @hasDecl(layout, "right");
+const left_segments: []const Segment = if (has_split_layout) layout.left else if (@hasDecl(layout, "line1")) layout.line1 else &.{};
+const right_segments: []const Segment = if (has_split_layout) layout.right else &.{};
+const margin: u16 = if (@hasDecl(layout, "right_margin")) layout.right_margin else 1;
+
+/// Renders the complete status line driven by config/layout.zig with left/right segment alignment.
 pub fn render(
     writer: anytype,
     session: agy.Session,
     repo: ?*const git_status.Repository,
     elapsed_ms: ?u64,
+    override_term_width: ?u16,
 ) !void {
-    var first = true;
-    inline for (layout.line1) |seg| {
-        try renderSegment(writer, seg, session, repo, elapsed_ms, &first);
+    var left_raw: [1024]u8 = undefined;
+    var left_stream = BufferStream.init(&left_raw);
+    var left_first = true;
+    inline for (left_segments) |seg| {
+        try renderSegment(&left_stream, seg, session, repo, elapsed_ms, &left_first);
     }
-    try writer.writeAll("\n");
+    const left_str = left_stream.getWritten();
+
+    var right_raw: [1024]u8 = undefined;
+    var right_stream = BufferStream.init(&right_raw);
+    var right_first = true;
+    inline for (right_segments) |seg| {
+        try renderSegment(&right_stream, seg, session, repo, elapsed_ms, &right_first);
+    }
+    const right_str = right_stream.getWritten();
+
+    const term_width = getTerminalWidth(override_term_width);
+
+    if (right_str.len == 0) {
+        try writer.writeAll(left_str);
+        try writer.writeAll("\n");
+    } else if (left_str.len == 0) {
+        const right_width = format.visualWidth(right_str);
+        if (term_width > right_width + margin) {
+            const pad = term_width - right_width - margin;
+            try writePadding(writer, pad);
+        }
+        try writer.writeAll(right_str);
+        try writer.writeAll("\n");
+    } else {
+        const left_width = format.visualWidth(left_str);
+        const right_width = format.visualWidth(right_str);
+        const total_needed = left_width + right_width + margin;
+
+        try writer.writeAll(left_str);
+        if (term_width > total_needed) {
+            const pad = term_width - total_needed;
+            try writePadding(writer, pad);
+        } else {
+            // Narrow terminal fallback: single space separator, no wrap
+            try writer.writeAll(" ");
+        }
+        try writer.writeAll(right_str);
+        try writer.writeAll("\n");
+    }
 
     inline for (layout.bars) |seg| {
         try renderBar(writer, seg, session);
@@ -233,7 +353,7 @@ test "render minimal session" {
         .agent_state = "idle",
     };
 
-    try render(&tw, session, null, null);
+    try render(&tw, session, null, null, null);
     const out = tw.getWritten();
     try std.testing.expect(out.len > 0);
     try std.testing.expect(std.mem.indexOf(u8, out, "Gemini 3.8 Flash") != null);
@@ -256,7 +376,7 @@ test "render with timer and context" {
         },
     };
 
-    try render(&tw, session, null, 4200);
+    try render(&tw, session, null, 4200, 100);
     const out = tw.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, out, "Gemini 3.8 Flash") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "54.0K") != null);
@@ -282,7 +402,7 @@ test "render with cache efficiency badge and cost" {
         },
     };
 
-    try render(&tw, session, null, null);
+    try render(&tw, session, null, null, 100);
     const out = tw.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, out, "⚡85%") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "$0.04") != null);
@@ -298,4 +418,32 @@ test "renderSegment session_title" {
     try renderSegment(&tw, .session_title, session, null, null, &first);
     const out = tw.getWritten();
     try std.testing.expect(std.mem.indexOf(u8, out, "Custom Session Work") != null);
+}
+
+test "render split layout wide vs narrow terminal" {
+    var tw_wide = TestWriter{};
+    const session = agy.Session{
+        .conversation_id = "test-split",
+        .cwd = "/home/user/project",
+        .model = .{ .id = "gemini-3.8-flash", .display_name = "Gemini 3.8 Flash" },
+        .workspace = .{ .current_dir = "/home/user/project", .project_dir = "/home/user/project" },
+        .cost = .{ .total_cost_usd = 0.04 },
+    };
+
+    // Wide terminal: should have padding spaces between left (Gemini...) and right ($0.04)
+    try render(&tw_wide, session, null, null, 100);
+    const wide_out = tw_wide.getWritten();
+    try std.testing.expect(std.mem.indexOf(u8, wide_out, "   ") != null);
+
+    // Narrow terminal: should fall back to single space without crashing or wrapping
+    var tw_narrow = TestWriter{};
+    try render(&tw_narrow, session, null, null, 20);
+    const narrow_out = tw_narrow.getWritten();
+    try std.testing.expect(narrow_out.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, narrow_out, "$0.04") != null);
+}
+
+test "getTerminalWidth override" {
+    try std.testing.expectEqual(@as(u16, 120), getTerminalWidth(120));
+    try std.testing.expect(getTerminalWidth(null) > 0);
 }

@@ -17,23 +17,27 @@ pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.smp_allocator;
     const io = init.io;
 
-    var args_iter = init.minimal.args.iterate();
-    const arg0 = args_iter.next();
-    const arg1 = args_iter.next();
+    var is_title = false;
+    var override_width: ?u16 = null;
 
-    const is_title = blk: {
-        if (arg0) |a0| {
-            if (std.mem.endsWith(u8, a0, "agy_title") or std.mem.endsWith(u8, a0, "title")) {
-                break :blk true;
+    var args_iter = init.minimal.args.iterate();
+    if (args_iter.next()) |a0| {
+        if (std.mem.endsWith(u8, a0, "agy_title") or std.mem.endsWith(u8, a0, "title")) {
+            is_title = true;
+        }
+    }
+
+    while (args_iter.next()) |arg| {
+        if (std.mem.eql(u8, arg, "title") or std.mem.eql(u8, arg, "--title")) {
+            is_title = true;
+        } else if (std.mem.eql(u8, arg, "--terminal-width") or std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--width")) {
+            if (args_iter.next()) |val_str| {
+                if (std.fmt.parseInt(u16, val_str, 10)) |w| {
+                    override_width = w;
+                } else |_| {}
             }
         }
-        if (arg1) |a1| {
-            if (std.mem.eql(u8, a1, "title") or std.mem.eql(u8, a1, "--title")) {
-                break :blk true;
-            }
-        }
-        break :blk false;
-    };
+    }
 
     var stdin_buf: [65536]u8 = undefined;
     var total_read: usize = 0;
@@ -84,6 +88,6 @@ pub fn main(init: std.process.Init) !void {
     // Track active prompt duration if turn is running
     const elapsed_ms = agy_pure.timer.getElapsedMs(session.getConversationId(), session.isRunning());
 
-    // Render formatted status line
-    try agy_pure.display.render(&writer, session, &repo, elapsed_ms);
+    // Render formatted status line with left/right segment alignment
+    try agy_pure.display.render(&writer, session, &repo, elapsed_ms, override_width);
 }

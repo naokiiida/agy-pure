@@ -1,17 +1,26 @@
 const Segment = @import("agy_pure").segments.Segment;
 
-/// Line 1 segments rendered left to right separated by spaces.
-/// Available segments: .model, .session_title, .context_icon, .timer, .cost, .project, .git, .lines, .subagents
-pub const line1: []const Segment = &.{
+/// Line 1 Left segments (identity anchors: model/title, project, git branch).
+pub const left: []const Segment = &.{
     .model,
-    .context_icon,
-    .timer,
-    .cost,
     .project,
     .git,
-    .lines,
-    .subagents,
 };
+
+/// Line 1 Right segments (telemetry: subagents, lines, cost, timer, context/cache).
+pub const right: []const Segment = &.{
+    .subagents,
+    .lines,
+    .cost,
+    .timer,
+    .context_icon,
+};
+
+/// Backwards compatibility alias for single-list layout configs.
+pub const line1: []const Segment = left;
+
+/// Right margin padding from terminal edge (default: 1 cell safety margin).
+pub const right_margin: u16 = 1;
 
 /// Optional progress bars (one per line below Line 1).
 pub const bars: []const Segment = &.{
