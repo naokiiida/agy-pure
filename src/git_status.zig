@@ -47,23 +47,16 @@ pub fn read_branch(allocator: mem.Allocator, cwd: ?[]const u8) ?[]const u8 {
     const git_fd = std.c.open(git_z, .{ .ACCMODE = .RDONLY });
     if (git_fd < 0) return null;
 
-    var stat_buf: std.c.Stat = undefined;
-    if (std.c.fstat(git_fd, &stat_buf) != 0) {
-        _ = std.c.close(git_fd);
-        return null;
-    }
-
     var head_path_buf: [1024]u8 = undefined;
     var head_path_len: usize = 0;
 
     // Check if regular file (worktree or submodule: "gitdir: <path>")
-    if ((stat_buf.mode & std.c.S.IFMT) == std.c.S.IFREG) {
-        var gitdir_content: [512]u8 = undefined;
-        const n = std.c.read(git_fd, &gitdir_content, gitdir_content.len);
-        _ = std.c.close(git_fd);
-        if (n <= 0) return null;
+    var gitdir_content: [512]u8 = undefined;
+    const n = std.c.read(git_fd, &gitdir_content, gitdir_content.len);
+    _ = std.c.close(git_fd);
+
+    if (n > 0 and std.mem.startsWith(u8, std.mem.trim(u8, gitdir_content[0..@intCast(n)], " \r\n\t"), "gitdir:")) {
         const line = std.mem.trim(u8, gitdir_content[0..@intCast(n)], " \r\n\t");
-        if (!std.mem.startsWith(u8, line, "gitdir:")) return null;
         const raw_target = std.mem.trim(u8, line["gitdir:".len..], " \r\n\t");
 
         // If target path is relative, resolve relative to base_dir
@@ -78,7 +71,6 @@ pub fn read_branch(allocator: mem.Allocator, cwd: ?[]const u8) ?[]const u8 {
         const hp = std.fmt.bufPrint(&head_path_buf, "{s}/HEAD", .{real_gitdir}) catch return null;
         head_path_len = hp.len;
     } else {
-        _ = std.c.close(git_fd);
         const hp = std.fmt.bufPrint(&head_path_buf, "{s}/.git/HEAD", .{base_dir}) catch return null;
         head_path_len = hp.len;
     }
@@ -93,9 +85,9 @@ pub fn read_branch(allocator: mem.Allocator, cwd: ?[]const u8) ?[]const u8 {
     defer _ = std.c.close(head_fd);
 
     var head_content: [256]u8 = undefined;
-    const n = std.c.read(head_fd, &head_content, head_content.len);
-    if (n <= 0) return null;
-    const head_str = std.mem.trim(u8, head_content[0..@intCast(n)], " \r\n\t");
+    const hn = std.c.read(head_fd, &head_content, head_content.len);
+    if (hn <= 0) return null;
+    const head_str = std.mem.trim(u8, head_content[0..@intCast(hn)], " \r\n\t");
 
     if (std.mem.startsWith(u8, head_str, "ref: refs/heads/")) {
         const branch = head_str["ref: refs/heads/".len..];
@@ -110,47 +102,52 @@ pub fn read_branch(allocator: mem.Allocator, cwd: ?[]const u8) ?[]const u8 {
     return null;
 }
 
-/// Executes git status via lightweight posix_spawnp directly without std.Io / Io.Threaded.
+extern "c" fn execvp(file: [*:0]const u8, argv: [*:null]const ?[*:0]const u8) c_int;
+
+/// Executes git status via lightweight fork/execvp directly without std.Io / Io.Threaded.
 fn execute_git_status(allocator: mem.Allocator, repo: *Repository, cwd: ?[]const u8) void {
     var pipe_fds: [2]c_int = undefined;
     if (std.c.pipe(&pipe_fds) != 0) return;
-    defer _ = std.c.close(pipe_fds[0]);
 
-    var actions: std.c.posix_spawn_file_actions_t = undefined;
-    if (std.c.posix_spawn_file_actions_init(&actions) != 0) {
+    const pid = std.c.fork();
+    if (pid < 0) {
+        _ = std.c.close(pipe_fds[0]);
         _ = std.c.close(pipe_fds[1]);
         return;
     }
-    defer _ = std.c.posix_spawn_file_actions_destroy(&actions);
 
-    _ = std.c.posix_spawn_file_actions_adddup2(&actions, pipe_fds[1], 1);
-    _ = std.c.posix_spawn_file_actions_addclose(&actions, pipe_fds[0]);
-
-    if (cwd) |c| {
-        if (c.len > 0) {
-            var cwd_buf: [1024]u8 = undefined;
-            if (c.len + 1 <= cwd_buf.len) {
-                @memcpy(cwd_buf[0..c.len], c);
-                cwd_buf[c.len] = 0;
-                _ = std.c.posix_spawn_file_actions_addchdir_np(&actions, @ptrCast(&cwd_buf));
+    if (pid == 0) {
+        _ = std.c.close(pipe_fds[0]);
+        if (cwd) |c| {
+            if (c.len > 0) {
+                var cwd_buf: [1024]u8 = undefined;
+                if (c.len + 1 <= cwd_buf.len) {
+                    @memcpy(cwd_buf[0..c.len], c);
+                    cwd_buf[c.len] = 0;
+                    _ = std.c.chdir(@ptrCast(&cwd_buf));
+                }
             }
         }
+
+        _ = std.c.dup2(pipe_fds[1], 1);
+        _ = std.c.close(pipe_fds[1]);
+
+        const argv = [_:null]?[*:0]const u8{
+            "git",
+            "-c",
+            "core.optionalLocks=0",
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            null,
+        };
+
+        _ = execvp("git", @ptrCast(&argv));
+        std.c._exit(1);
     }
 
-    const argv = [_:null]?[*:0]const u8{
-        "git",
-        "-c",
-        "core.optionalLocks=0",
-        "status",
-        "--porcelain=v2",
-        "--branch",
-        null,
-    };
-    var pid: std.posix.pid_t = undefined;
-
-    const res = std.c.posix_spawnp(&pid, "git", &actions, null, @ptrCast(&argv), @ptrCast(std.c.environ));
     _ = std.c.close(pipe_fds[1]);
-    if (res != 0) return;
+    defer _ = std.c.close(pipe_fds[0]);
 
     var output_buf: [8192]u8 = undefined;
     var total_read: usize = 0;
