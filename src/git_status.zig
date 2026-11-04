@@ -252,6 +252,13 @@ fn execute_git_status(allocator: mem.Allocator, repo: *Repository, cwd: ?[]const
         _ = std.c.dup2(pipe_fds[1], 1);
         _ = std.c.close(pipe_fds[1]);
 
+        // Silence stderr so git warnings/errors never clobber terminal prompt
+        const null_fd = std.c.open("/dev/null", .{ .ACCMODE = .WRONLY });
+        if (null_fd >= 0) {
+            _ = std.c.dup2(null_fd, 2);
+            _ = std.c.close(null_fd);
+        }
+
         const argv = [_:null]?[*:0]const u8{
             "git",
             "-c",
@@ -288,7 +295,7 @@ fn execute_git_status(allocator: mem.Allocator, repo: *Repository, cwd: ?[]const
     var status: c_int = 0;
     _ = std.c.waitpid(pid, &status, 0);
 
-    if (total_read > 0) {
+    if (status == 0 and total_read > 0) {
         parse_v2_output(allocator, repo, output_buf[0..total_read]);
     }
 }
