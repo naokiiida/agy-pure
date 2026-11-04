@@ -1,22 +1,35 @@
 const std = @import("std");
 
 const ThemeId = enum {
-    vague,
-    monokai,
+    catppuccin,
+    catppuccin_mocha,
+    catppuccin_latte,
     tokyo_night,
+    tokyo_night_day,
+    monokai,
+    monokai_light,
+};
+
+const ColorModeOption = enum {
+    auto,
+    truecolor,
+    ansi256,
+    none,
 };
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const theme_val = b.option(ThemeId, "theme", "Color palette (default: vague)") orelse .vague;
+    const theme_val = b.option(ThemeId, "theme", "Color palette (default: catppuccin)") orelse .catppuccin;
+    const color_mode_val = b.option(ColorModeOption, "color_mode", "Color mode (default: auto)") orelse .auto;
     const nerd_val = b.option(bool, "nerd", "Use Nerd Font symbols (default: true)") orelse true;
     const bar_width_val = b.option(u8, "bar_width", "Progress bar width in characters (default: 20)") orelse 20;
     const layout_path = b.option([]const u8, "layout", "Path to layout.zig config file") orelse "config/layout.zig";
 
     const options = b.addOptions();
     options.addOption(ThemeId, "theme", theme_val);
+    options.addOption(ColorModeOption, "color_mode", color_mode_val);
     options.addOption(bool, "nerd", nerd_val);
     options.addOption(u8, "bar_width", bar_width_val);
 

@@ -7,10 +7,6 @@ const git_status = @import("git_status.zig");
 const Segment = @import("segments.zig").Segment;
 const layout = @import("layout");
 
-const config = theme.active_config;
-const p = config.palette;
-const s = config.symbols;
-
 var buf1: [64]u8 = undefined;
 var buf2: [64]u8 = undefined;
 
@@ -101,11 +97,25 @@ pub fn render(
     elapsed_ms: ?u64,
     override_term_width: ?u16,
 ) !void {
+    try renderWithConfig(writer, session, repo, elapsed_ms, override_term_width, null);
+}
+
+/// Renders status line using an explicitly resolved configuration (TrueColor, Appearance, etc.).
+pub fn renderWithConfig(
+    writer: anytype,
+    session: agy.Session,
+    repo: ?*const git_status.Repository,
+    elapsed_ms: ?u64,
+    override_term_width: ?u16,
+    custom_config: ?*const theme.Config,
+) !void {
+    const cfg = custom_config orelse &theme.active_config;
+
     var left_raw: [1024]u8 = undefined;
     var left_stream = BufferStream.init(&left_raw);
     var left_first = true;
     inline for (left_segments) |seg| {
-        try renderSegment(&left_stream, seg, session, repo, elapsed_ms, &left_first);
+        try renderSegmentWithConfig(&left_stream, seg, session, repo, elapsed_ms, &left_first, cfg);
     }
     const left_str = left_stream.getWritten();
 
@@ -113,7 +123,7 @@ pub fn render(
     var right_stream = BufferStream.init(&right_raw);
     var right_first = true;
     inline for (right_segments) |seg| {
-        try renderSegment(&right_stream, seg, session, repo, elapsed_ms, &right_first);
+        try renderSegmentWithConfig(&right_stream, seg, session, repo, elapsed_ms, &right_first, cfg);
     }
     const right_str = right_stream.getWritten();
 
@@ -148,11 +158,11 @@ pub fn render(
     }
 
     inline for (layout.bars) |seg| {
-        try renderBar(writer, seg, session);
+        try renderBarWithConfig(writer, seg, session, cfg);
     }
 }
 
-fn renderSegment(
+pub fn renderSegment(
     writer: anytype,
     comptime seg: Segment,
     session: agy.Session,
@@ -160,17 +170,33 @@ fn renderSegment(
     elapsed_ms: ?u64,
     first: *bool,
 ) !void {
+    try renderSegmentWithConfig(writer, seg, session, repo, elapsed_ms, first, null);
+}
+
+pub fn renderSegmentWithConfig(
+    writer: anytype,
+    comptime seg: Segment,
+    session: agy.Session,
+    repo: ?*const git_status.Repository,
+    elapsed_ms: ?u64,
+    first: *bool,
+    custom_config: ?*const theme.Config,
+) !void {
+    const cfg = custom_config orelse &theme.active_config;
+    const p = cfg.palette;
+    const s = cfg.symbols;
+
     switch (seg) {
         .model => {
             try writeSpace(writer, first);
             const name = session.getModelName();
-            try theme.writeColored(writer, config, p.model_name_fg, name);
+            try theme.writeColored(writer, cfg.*, p.model_name_fg, name);
         },
         .session_title => {
             try writeSpace(writer, first);
             var title_buf: [256]u8 = undefined;
             const name = session.getSessionTitle(&title_buf) orelse session.getModelName();
-            try theme.writeColored(writer, config, p.session_title_fg, name);
+            try theme.writeColored(writer, cfg.*, p.session_title_fg, name);
         },
         .context_icon => {
             if (session.context_window) |cw| {
@@ -194,17 +220,17 @@ fn renderSegment(
                     const tok_str = format.formatTokens(&buf1, context_tokens);
                     const pct_str = std.fmt.bufPrint(&buf2, " ({d}%)", .{pct}) catch "?";
 
-                    try writer.writeAll(p.bar_context_fg);
+                    if (p.bar_context_fg.len > 0) try writer.writeAll(p.bar_context_fg);
                     try writer.writeAll(theme.context_bar_glyphs[level]);
                     try writer.writeAll(" ");
                     try writer.writeAll(tok_str);
                     try writer.writeAll(pct_str);
-                    try writer.writeAll(p.reset);
+                    if (p.bar_context_fg.len > 0 and p.reset.len > 0) try writer.writeAll(p.reset);
 
                     if (cw.getCacheHitRate()) |cache_pct| {
                         var cache_buf: [32]u8 = undefined;
                         const cache_str = std.fmt.bufPrint(&cache_buf, " ⚡{d}%", .{cache_pct}) catch "";
-                        try theme.writeColored(writer, config, p.token_cache_read_fg, cache_str);
+                        try theme.writeColored(writer, cfg.*, p.token_cache_read_fg, cache_str);
                     }
                 }
             }
@@ -213,14 +239,14 @@ fn renderSegment(
             if (elapsed_ms) |ms| {
                 try writeSpace(writer, first);
                 const dur_str = format.formatDuration(&buf1, ms);
-                try theme.writeSymbol(writer, config, p.timer_fg, s.timer, dur_str);
+                try theme.writeSymbol(writer, cfg.*, p.timer_fg, s.timer, dur_str);
             }
         },
         .cost => {
             if (session.getTotalCostUsd()) |total_cost| {
                 try writeSpace(writer, first);
                 const cost_str = format.formatCost(&buf1, total_cost);
-                try theme.writeSymbol(writer, config, p.cost_usd_fg, s.cost_usd, cost_str);
+                try theme.writeSymbol(writer, cfg.*, p.cost_usd_fg, s.cost_usd, cost_str);
             }
         },
         .project => {
@@ -228,18 +254,18 @@ fn renderSegment(
             if (proj.len > 0 and !std.mem.eql(u8, proj, ".")) {
                 try writeSpace(writer, first);
                 const basename = if (std.mem.lastIndexOfScalar(u8, proj, '/')) |i| proj[i + 1 ..] else proj;
-                try theme.writeColored(writer, config, p.directory_fg, basename);
+                try theme.writeColored(writer, cfg.*, p.directory_fg, basename);
             }
         },
         .git => {
             if (repo) |r| {
                 if (r.branch_name.len > 0) {
                     try writeSpace(writer, first);
-                    try theme.writeColored(writer, config, p.git_branch_fg, r.branch_name);
-                    if (r.is_dirty) try theme.writeColored(writer, config, p.git_dirty_fg, s.git_dirty);
+                    try theme.writeColored(writer, cfg.*, p.git_branch_fg, r.branch_name);
+                    if (r.is_dirty) try theme.writeColored(writer, cfg.*, p.git_dirty_fg, s.git_dirty);
                     if (r.has_upstream) {
-                        if (r.count_behind > 0) try theme.writeColored(writer, config, p.git_push_pull_fg, s.git_pull);
-                        if (r.count_ahead > 0) try theme.writeColored(writer, config, p.git_push_pull_fg, s.git_push);
+                        if (r.count_behind > 0) try theme.writeColored(writer, cfg.*, p.git_push_pull_fg, s.git_pull);
+                        if (r.count_ahead > 0) try theme.writeColored(writer, cfg.*, p.git_push_pull_fg, s.git_push);
                     }
                 }
             }
@@ -249,10 +275,10 @@ fn renderSegment(
                 if (cost.total_lines_added > 0 or cost.total_lines_removed > 0) {
                     try writeSpace(writer, first);
                     const added = std.fmt.bufPrint(&buf1, "+{d}", .{cost.total_lines_added}) catch "?";
-                    try theme.writeColored(writer, config, p.lines_added_fg, added);
+                    try theme.writeColored(writer, cfg.*, p.lines_added_fg, added);
                     try writer.writeAll(" ");
                     const removed = std.fmt.bufPrint(&buf2, "-{d}", .{cost.total_lines_removed}) catch "?";
-                    try theme.writeColored(writer, config, p.lines_removed_fg, removed);
+                    try theme.writeColored(writer, cfg.*, p.lines_removed_fg, removed);
                 }
             }
         },
@@ -260,7 +286,7 @@ fn renderSegment(
             var sub_buf: [128]u8 = undefined;
             if (agy.formatSubagents(&sub_buf, session)) |sub_str| {
                 try writeSpace(writer, first);
-                try theme.writeColored(writer, config, p.badge_ok_fg, sub_str);
+                try theme.writeColored(writer, cfg.*, p.badge_ok_fg, sub_str);
             }
         },
         else => {},
@@ -275,19 +301,31 @@ fn writeSpace(writer: anytype, first: *bool) !void {
     try writer.writeAll(" ");
 }
 
-fn renderBar(
+pub fn renderBar(
     writer: anytype,
     comptime seg: Segment,
     session: agy.Session,
 ) !void {
+    try renderBarWithConfig(writer, seg, session, null);
+}
+
+pub fn renderBarWithConfig(
+    writer: anytype,
+    comptime seg: Segment,
+    session: agy.Session,
+    custom_config: ?*const theme.Config,
+) !void {
+    const cfg = custom_config orelse &theme.active_config;
+    const p = cfg.palette;
+
     switch (seg) {
         .bar_context => {
             const cw = session.context_window orelse return;
             const pct_f = cw.used_percentage orelse return;
             const pct: u8 = @intFromFloat(@min(100.0, @max(0.0, pct_f)));
 
-            try theme.writeColored(writer, config, p.label_fg, "Ctx ");
-            try progress_bar.renderSingle(writer, p.bar_context_fg, pct);
+            try theme.writeColored(writer, cfg.*, p.label_fg, "Ctx ");
+            try progress_bar.renderSingle(writer, p.bar_context_fg, pct, cfg);
             const pct_str = std.fmt.bufPrint(&buf1, " {d}%", .{pct}) catch "?";
             try writer.writeAll(pct_str);
             try writer.writeAll("\n");
@@ -297,8 +335,8 @@ fn renderBar(
             if (cost.total_duration_ms == 0) return;
             const pct = format.percentage(cost.total_api_duration_ms, cost.total_duration_ms);
 
-            try theme.writeColored(writer, config, p.label_fg, "API ");
-            try progress_bar.renderSingle(writer, p.bar_api_time_fg, pct);
+            try theme.writeColored(writer, cfg.*, p.label_fg, "API ");
+            try progress_bar.renderSingle(writer, p.bar_api_time_fg, pct, cfg);
             const api_str = format.formatDuration(&buf1, cost.total_api_duration_ms);
             const tot_str = format.formatDuration(&buf2, cost.total_duration_ms);
             try writer.writeAll(" ");
@@ -311,12 +349,12 @@ fn renderBar(
             const cost = session.cost orelse return;
             if (cost.total_lines_added == 0 and cost.total_lines_removed == 0) return;
 
-            try theme.writeColored(writer, config, p.label_fg, "Lin ");
-            try progress_bar.renderDual(writer, p.lines_added_fg, p.lines_removed_fg, cost.total_lines_added, cost.total_lines_removed);
+            try theme.writeColored(writer, cfg.*, p.label_fg, "Lin ");
+            try progress_bar.renderDual(writer, p.lines_added_fg, p.lines_removed_fg, cost.total_lines_added, cost.total_lines_removed, cfg);
             const added = std.fmt.bufPrint(&buf1, " +{d}", .{cost.total_lines_added}) catch "?";
             const removed = std.fmt.bufPrint(&buf2, "/-{d}", .{cost.total_lines_removed}) catch "?";
-            try theme.writeColored(writer, config, p.lines_added_fg, added);
-            try theme.writeColored(writer, config, p.lines_removed_fg, removed);
+            try theme.writeColored(writer, cfg.*, p.lines_added_fg, added);
+            try theme.writeColored(writer, cfg.*, p.lines_removed_fg, removed);
             try writer.writeAll("\n");
         },
         else => {},

@@ -19,6 +19,9 @@ pub fn main(init: std.process.Init) !void {
 
     var is_title = false;
     var override_width: ?u16 = null;
+    var override_theme: ?[]const u8 = null;
+    var override_appearance: ?agy_pure.theme.Appearance = null;
+    var override_color_mode: ?agy_pure.theme.ColorMode = null;
 
     var args_iter = init.minimal.args.iterate();
     if (args_iter.next()) |a0| {
@@ -35,6 +38,31 @@ pub fn main(init: std.process.Init) !void {
                 if (std.fmt.parseInt(u16, val_str, 10)) |w| {
                     override_width = w;
                 } else |_| {}
+            }
+        } else if (std.mem.eql(u8, arg, "--light")) {
+            override_appearance = .light;
+        } else if (std.mem.eql(u8, arg, "--dark")) {
+            override_appearance = .dark;
+        } else if (std.mem.eql(u8, arg, "--truecolor") or std.mem.eql(u8, arg, "--24bit") or std.mem.eql(u8, arg, "--color=truecolor") or std.mem.eql(u8, arg, "--color=24bit")) {
+            override_color_mode = .truecolor;
+        } else if (std.mem.eql(u8, arg, "--256") or std.mem.eql(u8, arg, "--256color") or std.mem.eql(u8, arg, "--color=256")) {
+            override_color_mode = .ansi256;
+        } else if (std.mem.eql(u8, arg, "--no-color") or std.mem.eql(u8, arg, "--color=never")) {
+            override_color_mode = .none;
+        } else if (std.mem.eql(u8, arg, "--theme")) {
+            if (args_iter.next()) |t| {
+                override_theme = t;
+            }
+        } else if (std.mem.startsWith(u8, arg, "--theme=")) {
+            override_theme = arg["--theme=".len..];
+        } else if (std.mem.startsWith(u8, arg, "--color=")) {
+            const val = arg["--color=".len..];
+            if (std.mem.eql(u8, val, "truecolor") or std.mem.eql(u8, val, "24bit")) {
+                override_color_mode = .truecolor;
+            } else if (std.mem.eql(u8, val, "256")) {
+                override_color_mode = .ansi256;
+            } else if (std.mem.eql(u8, val, "never") or std.mem.eql(u8, val, "none")) {
+                override_color_mode = .none;
             }
         }
     }
@@ -88,6 +116,14 @@ pub fn main(init: std.process.Init) !void {
     // Track active prompt duration if turn is running
     const elapsed_ms = agy_pure.timer.getElapsedMs(session.getConversationId(), session.isRunning());
 
+    // Resolve theme configuration with dynamic TrueColor and appearance detection
+    const active_cfg = agy_pure.theme.resolveConfig(
+        override_theme,
+        override_appearance,
+        override_color_mode,
+        true, // default to nerd symbols
+    );
+
     // Render formatted status line with left/right segment alignment
-    try agy_pure.display.render(&writer, session, &repo, elapsed_ms, override_width);
+    try agy_pure.display.renderWithConfig(&writer, session, &repo, elapsed_ms, override_width, &active_cfg);
 }

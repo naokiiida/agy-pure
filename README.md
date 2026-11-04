@@ -64,7 +64,11 @@ Detailed benchmark methodology and root cause analysis: [docs/performance-analys
 - **Git State**: Single fast query via `git status --porcelain=v2 --branch` (branch, dirty `*`, ahead `⇡2`, behind `⇣1`).
 - **Smart Directory**: Displays project or cwd truncated up to 3 folders deep, replacing `$HOME` with `~`.
 - **Subagents Tracking**: Displays active subagent count badge when multi-agent tasks execute.
-- **Themes**: Built-in palettes (`vague`, `tokyo_night`, `monokai`).
+- **Themes & TrueColor**:
+  - Full 24-bit TrueColor (`COLORTERM=truecolor` / `24bit`) support per [termstandard/colors](https://github.com/termstandard/colors).
+  - Perceptual Redmean comptime quantization fallback to ANSI-256 for legacy terminals.
+  - Dynamic Dark/Light counterpart switching based on `$COLORFGBG` and `settings.json` (`"colorScheme"`).
+  - Built-in palettes: **Catppuccin** (`mocha` ↔ `latte`, default), **Tokyo Night** (`tokyo_night` ↔ `tokyo_night_day`), and **Monokai** (`monokai` ↔ `monokai_light`).
 
 ### `agy_title` (Window Title)
 - **Sub-3ms Execution (~503KB binary)**: Ensures zero terminal flicker or CPU spikes even during rapid agent state transitions.
