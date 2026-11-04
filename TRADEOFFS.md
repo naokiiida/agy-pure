@@ -73,11 +73,11 @@ When code size exceeds L1i, high-frequency execution (invoked every 300ms by `ag
 * **Effect**: Bypasses initialization of `init.io` (`Io.Threaded`), eliminating thread pool runtime structures and the 256 KB thread signal stack in `__thread_bss`.
 * **Measurable Reduction**: Drops another **~16.2 KB from `__text`**.
 
-### Strategy 4: Zero-Subprocess In-Process Git Branch Detection
+### Strategy 4: Zero-Subprocess In-Process Git Branch Detection & Portable Fast Path
 * **Implementation**: Implement a direct POSIX `.git/HEAD` reader (`read_branch`) in `src/git_status.zig`.
-  * For `agy_title`: Resolves branch name in < 20 µs with **0 subprocess forks**.
-  * For `agy_pure`: Fast-paths clean non-git repos instantly (< 20 µs), and decouples `git status` via direct `posix_spawnp`, bypassing `std.Io.Threaded`.
-* **Measurable Reduction**: `agy_pure` peak RAM drops from **5.5 MiB to 1.5 MiB (-73%)**, and latency drops from **19.4 ms to < 1.0 ms (20x faster)**.
+  * For `agy_title`: Resolves branch name in < 20 µs with **0 subprocess forks**, walking parent directories up to 32 levels on the stack to discover repository root from any subfolder.
+  * For `agy_pure`: Fast-paths clean non-git repos instantly (< 20 µs). When inside a git repository, executes `git status` via lightweight POSIX `fork`/`execvp` directly without `std.Io` / `Io.Threaded`, draining pipe buffers to prevent deadlock on large outputs.
+* **Measurable Reduction**: `agy_pure` peak RAM drops from **5.5 MiB to 1.4 MiB (-74%)**, and latency drops from **19.4 ms to 1.8 ms (10x faster)**.
 
 ### Strategy 5: Stack `FixedBufferAllocator` with Heap Fallback
 * **Implementation**: Replace heap `ArenaAllocator.init(smp_allocator)` with a 128 KB stack buffer:
@@ -98,8 +98,10 @@ When code size exceeds L1i, high-frequency execution (invoked every 300ms by `ag
 | **Mach-O Symbols** | `.strip = true` in Release | Keep symbols in Release | **Trade-off**: Profiling in `lldb` or Apple Instruments displays hex addresses instead of function names.<br>**Mitigation**: Can pass `-Dstrip=false` during dedicated profiling sessions. |
 | **I/O Engine** | Direct POSIX syscalls (`Init.Minimal`) | `std.Io` / `Io.Threaded` | **Trade-off**: Cannot use high-level stdlib `std.Io` helpers.<br>**Mitigation**: Directly honors repo tenet 1A (direct POSIX I/O). |
 | **Memory Allocation** | Stack FBA (128 KB) + Fallback | Unconditional `smp_allocator` | **Trade-off**: Payloads > 128 KB would OOM if naked.<br>**Mitigation**: Tiered fallback catches OOM and defers to heap. |
-| **Git Engine** | Direct `.git/HEAD` + `posix_spawnp` | [gitoxide](https://github.com/gitoxidelabs/gitoxide) | **Trade-off**: Gitoxide Rust library is 8–20 MB (destroys L1 cache). Direct reader is 0 KB. |
+| **Git Engine** | Direct `.git/HEAD` + `fork`/`execvp` | [gitoxide](https://github.com/gitoxidelabs/gitoxide) | **Trade-off**: Gitoxide Rust library is 8–20 MB (destroys L1 cache). Direct reader is 0 KB. |
 | **Process Model** | Ephemeral CLI (0 MB idle) | [gitstatusd](https://github.com/romkatv/gitstatus) Daemon | **Trade-off**: Daemon consumes 20–30 MB persistent idle RAM and risks orphan processes. Ephemeral model guarantees 0 MB idle RAM. |
+| **Subprocess Spawning** | Direct POSIX `fork`/`execvp` | `posix_spawn` / `addchdir_np` | **Trade-off**: Non-portable extensions (`addchdir_np`) cause compile errors across Linux/Darwin in Zig 0.17; `fork`/`execvp` provides 100% portable POSIX execution. |
+| **Pipe Management** | Drain to EOF in 4 KB chunks | Fixed 8 KB read slice | **Trade-off**: Reading only 8 KB deadlocks on repos with > 64 KB output; drain loop guarantees zero deadlock while consuming < 10 µs. |
 
 ---
 

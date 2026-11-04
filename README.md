@@ -1,12 +1,13 @@
 # agy-pure
 
-> Blazingly fast, zero-overhead statusline and window title generators for Google Antigravity CLI (`agy`) written in Zig.
+> Blazingly fast, zero-overhead statusline, window title, and notification engines for Google Antigravity CLI (`agy`) written in native Zig.
 
 `agy-pure` provides lightning-fast CLI extensions for `agy` (with backward compatibility for Claude Code):
 - **`agy_pure`**: Rich statusline generator rendering model information, real-time prompt duration, 8-stage visual circular gauges, directory path, Git status, and subagent counts.
 - **`agy_title`**: Terminal window/tab title generator rendering agent lifecycle states with emojis and smart CitC/Git workspace detection.
+- **`agy_notify`**: Instant desktop notifications via terminal OSC 777/OSC 9 escape sequences on turn completion and action-required events.
 
-Both compile into tiny native binaries (<540 KB) that execute in **under 2.5 milliseconds** with zero runtime dependencies.
+All three compile into tiny native binaries (<540 KB) that execute in **under 2.5 milliseconds** with zero runtime dependencies.
 
 ---
 
@@ -32,6 +33,13 @@ With optional flags (`--git`, `--subagents`):
 ```
 🏃 working | agy-pure (main) [2 subagents]
 ```
+
+### Turn & Action Notifications (`agy_notify`)
+Terminal OSC 777 & OSC 9 escape sequences sent directly to `/dev/tty` (compatible with Ghostty, cmux, WezTerm, iTerm2, Kitty, tmux):
+- **Turn Complete**: `Done · agy-pure` with response summary preview
+- **User Action Required**: `⏳ Needs input · agy-pure`
+- **Error**: `❌ Error · agy-pure` with error message excerpt
+
 
 ---
 
@@ -81,49 +89,84 @@ Detailed benchmark methodology and root cause analysis: [docs/performance-analys
   - `--subagents`: Append active subagents badge.
   - `--no-emoji`: Pure plain-text output.
 
+### `agy_notify` (Turn & Action Notifications)
+- **Sub-2ms Execution (~500KB binary)**: Zero runtime overhead, executed directly as a hook command without background daemon footprint.
+- **Dual OSC Terminal Standards**: Emits both **OSC 777** (`notify;title;body`) and **OSC 9** (`9;body`) directly to `/dev/tty`.
+- **Intelligent Filtering**: Automatically filters out intermediate subagent step completions; triggers notifications only on full turn completion or when user action is required.
+- **Dynamic Summaries**: Automatically cleans markdown formatting from the agent's final response or error string to populate concise desktop notification previews.
+- **Multiplexer Pass-Through**: Detects active `tmux` sessions and wraps escape sequences with `\ePtmux;...\e\\` transparently.
+
 ---
 
 ## Installation
 
-### 1. Build from Source
+### Option A: Via Nix (Flake)
 
-Requirements: [Zig](https://ziglang.org/) `0.17.0` (or newer).
+Build or install directly using the included `flake.nix`:
 
 ```bash
-git clone https://github.com/your-username/agy-pure.git
+# Install to user environment (~/.nix-profile/bin)
+nix profile install github:naokiiida/agy-pure
+
+# Or build locally
+nix build
+# Binaries are in ./result/bin/ (agy_pure, agy_title, agy_notify)
+
+# Or drop into a dev shell with Zig 0.17.0
+nix develop
+```
+
+### Option B: Build from Source with Just / Native Zig
+
+Requirements: [Zig](https://ziglang.org/) `0.17.0` (or newer) and [just](https://github.com/casey/just).
+
+```bash
+git clone https://github.com/naokiiida/agy-pure.git
 cd agy-pure
 
-# Build optimized binaries for both statusline and title
+# Recommended: builds ReleaseFast and installs all 3 binaries to ~/.gemini/antigravity-cli/bin/
+just install
+
+# Or build manually:
 zig build -Doptimize=ReleaseFast
 ```
 
 The compiled binaries will be placed in `zig-out/bin/`:
 - `zig-out/bin/agy_pure` (Statusline)
 - `zig-out/bin/agy_title` (Window Title)
+- `zig-out/bin/agy_notify` (Turn notifications)
 
-Copy them to your local binary path:
-```bash
-mkdir -p ~/.gemini/antigravity-cli/bin
-cp zig-out/bin/agy_pure ~/.gemini/antigravity-cli/bin/agy_pure
-cp zig-out/bin/agy_title ~/.gemini/antigravity-cli/bin/agy_title
-```
 
 ---
 
 ## 2. Configure in Antigravity CLI (`agy`)
 
-Add both tools to `~/.gemini/antigravity-cli/settings.json`:
+Add the tools to `~/.gemini/antigravity-cli/settings.json`:
 
 ```json
 {
   "statusLine": {
     "type": "command",
-    "command": "/Users/naokiiida/.gemini/antigravity-cli/bin/agy_pure",
+    "command": "~/.gemini/antigravity-cli/bin/agy_pure",
     "enabled": true
   },
   "title": {
     "type": "command",
-    "command": "/Users/naokiiida/.gemini/antigravity-cli/bin/agy_title"
+    "command": "~/.gemini/antigravity-cli/bin/agy_title"
+  },
+  "hooks": {
+    "stop": [
+      {
+        "type": "command",
+        "command": "~/.gemini/antigravity-cli/bin/agy_notify"
+      }
+    ],
+    "notification": [
+      {
+        "type": "command",
+        "command": "~/.gemini/antigravity-cli/bin/agy_notify --event=notification"
+      }
+    ]
   }
 }
 ```
@@ -135,6 +178,7 @@ Inside an interactive `agy` session:
 /statusline ~/.gemini/antigravity-cli/bin/agy_pure
 /title ~/.gemini/antigravity-cli/bin/agy_title
 ```
+
 
 ---
 
@@ -174,12 +218,11 @@ zig build -Doptimize=ReleaseFast
 # Run unit test suite
 zig build test
 
+# Verify Apple Silicon L1 instruction cache fit (< 140 KB machine code)
+just l1-check
+
 # Run benchmark suite (requires hyperfine)
-hyperfine --warmup 10 --min-runs 50 --input benchmark/payload.json \
-  "./zig-out/bin/agy_title" \
-  "bash benchmark/title.sh" \
-  "python3 benchmark/title.py" \
-  "node benchmark/title.js"
+just bench
 ```
 
 ---

@@ -519,3 +519,54 @@ test "read_branch discovers repo from deep subdirectory" {
         try std.testing.expect(b.len > 0);
     }
 }
+
+extern "c" fn mkdir(path: [*:0]const u8, mode: std.c.mode_t) c_int;
+
+test "worktree .git file parsing with relative gitdir" {
+    const allocator = std.testing.allocator;
+
+    _ = mkdir("/tmp/agy_test_wt", 0o755);
+    _ = mkdir("/tmp/agy_test_wt/repo", 0o755);
+    _ = mkdir("/tmp/agy_test_wt/repo/.git", 0o755);
+    _ = mkdir("/tmp/agy_test_wt/repo/.git/worktrees", 0o755);
+    _ = mkdir("/tmp/agy_test_wt/repo/.git/worktrees/repo.feature", 0o755);
+    _ = mkdir("/tmp/agy_test_wt/repo.feature", 0o755);
+
+    defer {
+        _ = std.c.unlink("/tmp/agy_test_wt/repo/.git/worktrees/repo.feature/HEAD");
+        _ = std.c.unlink("/tmp/agy_test_wt/repo.feature/.git");
+        _ = std.c.rmdir("/tmp/agy_test_wt/repo/.git/worktrees/repo.feature");
+        _ = std.c.rmdir("/tmp/agy_test_wt/repo/.git/worktrees");
+        _ = std.c.rmdir("/tmp/agy_test_wt/repo/.git");
+        _ = std.c.rmdir("/tmp/agy_test_wt/repo");
+        _ = std.c.rmdir("/tmp/agy_test_wt/repo.feature");
+        _ = std.c.rmdir("/tmp/agy_test_wt");
+    }
+
+    // Write HEAD in worktree admin dir
+    {
+        const fd = std.c.open("/tmp/agy_test_wt/repo/.git/worktrees/repo.feature/HEAD", .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o644));
+        if (fd >= 0) {
+            const content = "ref: refs/heads/feature-worktrunk\n";
+            _ = std.c.write(fd, content.ptr, content.len);
+            _ = std.c.close(fd);
+        }
+    }
+
+    // Write relative .git file in worktree dir (like Git 2.45+ useRelativePaths)
+    {
+        const fd = std.c.open("/tmp/agy_test_wt/repo.feature/.git", .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o644));
+        if (fd >= 0) {
+            const content = "gitdir: ../repo/.git/worktrees/repo.feature\n";
+            _ = std.c.write(fd, content.ptr, content.len);
+            _ = std.c.close(fd);
+        }
+    }
+
+    const branch = read_branch(allocator, "/tmp/agy_test_wt/repo.feature");
+    try std.testing.expect(branch != null);
+    if (branch) |b| {
+        defer allocator.free(b);
+        try std.testing.expectEqualStrings("feature-worktrunk", b);
+    }
+}
