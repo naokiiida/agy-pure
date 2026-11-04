@@ -30,6 +30,9 @@ bench: build
         ./zig-out/bin/agy_title \
         ./zig-out/bin/agy_notify
 
+# Full quality gate: unit tests + L1i cache verification + latency benchmark
+gate: test l1-check bench
+
 # Verify machine code fits within Apple Silicon L1i cache (ReleaseSmall: Target < 140 KB)
 l1-check: build-small
     #!/usr/bin/env bash
