@@ -6,6 +6,10 @@ default:
 build:
     zig build -Doptimize=ReleaseFast
 
+# Build optimized release binaries with ReleaseSmall (-Oz, best for Apple Silicon L1i cache)
+build-small:
+    zig build -Doptimize=ReleaseSmall
+
 # Build debug binaries
 build-debug:
     zig build
@@ -25,6 +29,22 @@ bench: build
         ./zig-out/bin/agy_pure \
         ./zig-out/bin/agy_title \
         ./zig-out/bin/agy_notify
+
+# Verify machine code fits within Apple Silicon L1i cache (ReleaseSmall: Target < 140 KB)
+l1-check: build-small
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "=== Apple Silicon L1 Instruction Cache Gate (ReleaseSmall: Target < 140 KB) ==="
+    for bin in agy_pure agy_title agy_notify; do
+        TEXT_BYTES=$(size -m "zig-out/bin/$bin" | awk '/Section __text/ {print $3}')
+        TEXT_KB=$((TEXT_BYTES / 1024))
+        if [ "$TEXT_BYTES" -le 143360 ]; then
+            echo "✓ $bin: ${TEXT_KB} KB ($TEXT_BYTES bytes) fits inside Apple Silicon L1i"
+        else
+            echo "✗ $bin: ${TEXT_KB} KB exceeds L1i limit!"
+            exit 1
+        fi
+    done
 
 # Clean build artifacts and timer caches
 clean:

@@ -14,12 +14,19 @@ pub const StdoutWriter = struct {
     }
 };
 
-pub fn main(init: std.process.Init) !void {
+pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {
+    _ = msg;
+    _ = error_return_trace;
+    _ = ret_addr;
+    std.c.abort();
+}
+
+pub fn main(init: std.process.Init.Minimal) !void {
     const allocator = std.heap.smp_allocator;
 
     var config = agy_pure.title.TitleConfig{};
 
-    var args_iter = init.minimal.args.iterate();
+    var args_iter = init.args.iterate();
     _ = args_iter.next(); // skip binary name
 
     while (args_iter.next()) |arg| {
@@ -75,13 +82,20 @@ pub fn main(init: std.process.Init) !void {
 
     const raw_json = stdin_buf[0..total_read];
 
-    var input_arena = std.heap.ArenaAllocator.init(allocator);
+    var stack_buf: [131072]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&stack_buf);
+    var input_arena = std.heap.ArenaAllocator.init(fba.allocator());
     defer input_arena.deinit();
 
-    const parsed = agy_pure.agy.parse(input_arena.allocator(), raw_json) catch {
-        var writer = StdoutWriter{};
-        try writer.writeAll("unknown\n");
-        return;
+    const parsed = agy_pure.agy.parse(input_arena.allocator(), raw_json) catch blk: {
+        // Fallback to smp_allocator if payload exceeds stack buffer
+        var heap_arena = std.heap.ArenaAllocator.init(allocator);
+        defer heap_arena.deinit();
+        break :blk agy_pure.agy.parse(heap_arena.allocator(), raw_json) catch {
+            var writer = StdoutWriter{};
+            try writer.writeAll("unknown\n");
+            return;
+        };
     };
     const session = parsed.value;
 
@@ -89,14 +103,14 @@ pub fn main(init: std.process.Init) !void {
     const state = agy_pure.title.parseState(state_str);
 
     var branch_name: ?[]const u8 = null;
-    var repo_opt: ?agy_pure.git_status.Repository = null;
-    defer if (repo_opt) |*r| r.deinit(allocator);
+    var branch_allocated: ?[]const u8 = null;
+    defer if (branch_allocated) |b| allocator.free(b);
 
     if (config.show_branch) {
-        repo_opt = agy_pure.git_status.fetch_repository(allocator, init.io, session.getCwd());
-        if (repo_opt) |*r| {
-            if (r.branch_name.len > 0 and !std.mem.eql(u8, r.branch_name, "DETACHED")) {
-                branch_name = r.branch_name;
+        branch_allocated = agy_pure.git_status.read_branch(allocator, session.getCwd());
+        if (branch_allocated) |b| {
+            if (b.len > 0 and !std.mem.eql(u8, b, "DETACHED")) {
+                branch_name = b;
             }
         }
     }

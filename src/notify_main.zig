@@ -14,11 +14,18 @@ pub const StdoutWriter = struct {
     }
 };
 
-pub fn main(init: std.process.Init) !void {
+pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {
+    _ = msg;
+    _ = error_return_trace;
+    _ = ret_addr;
+    std.c.abort();
+}
+
+pub fn main(init: std.process.Init.Minimal) !void {
     const allocator = std.heap.smp_allocator;
 
     var is_notification = false;
-    var args_iter = init.minimal.args.iterate();
+    var args_iter = init.args.iterate();
     _ = args_iter.next(); // skip binary name
 
     while (args_iter.next()) |arg| {
@@ -53,14 +60,22 @@ pub fn main(init: std.process.Init) !void {
 
     const raw_json = stdin_buf[0..total_read];
 
-    var input_arena = std.heap.ArenaAllocator.init(allocator);
+    var stack_buf: [131072]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&stack_buf);
+    var input_arena = std.heap.ArenaAllocator.init(fba.allocator());
     defer input_arena.deinit();
 
     const parsed = std.json.parseFromSlice(agy_pure.notify.StopHookPayload, input_arena.allocator(), raw_json, .{
         .ignore_unknown_fields = true,
-    }) catch {
-        try writer.writeAll("{}\n");
-        return;
+    }) catch blk: {
+        var heap_arena = std.heap.ArenaAllocator.init(allocator);
+        defer heap_arena.deinit();
+        break :blk std.json.parseFromSlice(agy_pure.notify.StopHookPayload, heap_arena.allocator(), raw_json, .{
+            .ignore_unknown_fields = true,
+        }) catch {
+            try writer.writeAll("{}\n");
+            return;
+        };
     };
     const payload = parsed.value;
 

@@ -13,9 +13,15 @@ pub const StdoutWriter = struct {
     }
 };
 
-pub fn main(init: std.process.Init) !void {
+pub fn panic(msg: []const u8, error_return_trace: ?*std.builtin.StackTrace, ret_addr: ?usize) noreturn {
+    _ = msg;
+    _ = error_return_trace;
+    _ = ret_addr;
+    std.c.abort();
+}
+
+pub fn main(init: std.process.Init.Minimal) !void {
     const allocator = std.heap.smp_allocator;
-    const io = init.io;
 
     var is_title = false;
     var override_width: ?u16 = null;
@@ -23,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
     var override_appearance: ?agy_pure.theme.Appearance = null;
     var override_color_mode: ?agy_pure.theme.ColorMode = null;
 
-    var args_iter = init.minimal.args.iterate();
+    var args_iter = init.args.iterate();
     if (args_iter.next()) |a0| {
         if (std.mem.endsWith(u8, a0, "agy_title") or std.mem.endsWith(u8, a0, "title")) {
             is_title = true;
@@ -87,17 +93,23 @@ pub fn main(init: std.process.Init) !void {
 
     const raw_json = stdin_buf[0..total_read];
 
-    var input_arena = std.heap.ArenaAllocator.init(allocator);
+    var stack_buf: [131072]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&stack_buf);
+    var input_arena = std.heap.ArenaAllocator.init(fba.allocator());
     defer input_arena.deinit();
 
-    const parsed = agy_pure.agy.parse(input_arena.allocator(), raw_json) catch |err| {
-        if (is_title) {
-            var writer = StdoutWriter{};
-            try writer.writeAll("🤖 idle | unknown\n");
+    const parsed = agy_pure.agy.parse(input_arena.allocator(), raw_json) catch blk: {
+        var heap_arena = std.heap.ArenaAllocator.init(allocator);
+        defer heap_arena.deinit();
+        break :blk agy_pure.agy.parse(heap_arena.allocator(), raw_json) catch |err| {
+            if (is_title) {
+                var writer = StdoutWriter{};
+                try writer.writeAll("🤖 idle | unknown\n");
+                return;
+            }
+            std.debug.print("agy-pure: json parse error: {}\n", .{err});
             return;
-        }
-        std.debug.print("agy-pure: json parse error: {}\n", .{err});
-        return;
+        };
     };
     const session = parsed.value;
 
@@ -110,7 +122,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // Fetch repository state (branch, dirty, sync)
-    var repo = agy_pure.git_status.fetch_repository(allocator, io, session.getCwd());
+    var repo = agy_pure.git_status.fetch_repository(allocator, session.getCwd());
     defer repo.deinit(allocator);
 
     // Track active prompt duration if turn is running

@@ -26,6 +26,7 @@ pub fn build(b: *std.Build) void {
     const nerd_val = b.option(bool, "nerd", "Use Nerd Font symbols (default: true)") orelse true;
     const bar_width_val = b.option(u8, "bar_width", "Progress bar width in characters (default: 20)") orelse 20;
     const layout_path = b.option([]const u8, "layout", "Path to layout.zig config file") orelse "config/layout.zig";
+    const strip_val = b.option(bool, "strip", "Strip debug symbols (default: true for non-Debug)") orelse (optimize != .debug);
 
     const options = b.addOptions();
     options.addOption(ThemeId, "theme", theme_val);
@@ -56,6 +57,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = strip_val,
             .link_libc = true,
             .imports = &.{
                 .{ .name = "agy_pure", .module = mod },
@@ -72,6 +74,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/title_main.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = strip_val,
             .link_libc = true,
             .imports = &.{
                 .{ .name = "agy_pure", .module = mod },
@@ -87,6 +90,7 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/notify_main.zig"),
             .target = target,
             .optimize = optimize,
+            .strip = strip_val,
             .link_libc = true,
             .imports = &.{
                 .{ .name = "agy_pure", .module = mod },
