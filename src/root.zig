@@ -1,4 +1,7 @@
 const std = @import("std");
+const config = @import("config");
+
+pub const version = config.version;
 
 pub const agy = @import("agy.zig");
 pub const directory = @import("directory.zig");

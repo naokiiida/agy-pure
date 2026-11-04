@@ -29,6 +29,7 @@ pub fn build(b: *std.Build) void {
     const strip_val = b.option(bool, "strip", "Strip debug symbols (default: true for non-Debug)") orelse (optimize != .debug);
 
     const options = b.addOptions();
+    options.addOption([]const u8, "version", "0.2.0");
     options.addOption(ThemeId, "theme", theme_val);
     options.addOption(ColorModeOption, "color_mode", color_mode_val);
     options.addOption(bool, "nerd", nerd_val);

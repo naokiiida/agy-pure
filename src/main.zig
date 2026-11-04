@@ -37,7 +37,15 @@ pub fn main(init: std.process.Init.Minimal) !void {
     }
 
     while (args_iter.next()) |arg| {
-        if (std.mem.eql(u8, arg, "title") or std.mem.eql(u8, arg, "--title")) {
+        if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
+            var writer = StdoutWriter{};
+            try writer.writeAll("agy_pure " ++ agy_pure.version ++ "\n");
+            return;
+        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            var writer = StdoutWriter{};
+            try writer.writeAll("Usage: agy_pure [options] < payload.json\n\nOptions:\n  -v, --version         Show version\n  -h, --help            Show help\n  -w, --width <cols>    Override terminal width\n      --theme <name>    Theme (catppuccin, tokyo_night, monokai)\n      --light / --dark  Appearance override\n      --truecolor       Force 24-bit TrueColor\n      --256             Force ANSI-256\n      --no-color        Disable color output\n");
+            return;
+        } else if (std.mem.eql(u8, arg, "title") or std.mem.eql(u8, arg, "--title")) {
             is_title = true;
         } else if (std.mem.eql(u8, arg, "--terminal-width") or std.mem.eql(u8, arg, "-w") or std.mem.eql(u8, arg, "--width")) {
             if (args_iter.next()) |val_str| {

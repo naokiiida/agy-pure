@@ -30,7 +30,11 @@ pub fn main(init: std.process.Init.Minimal) !void {
     _ = args_iter.next(); // skip binary name
 
     while (args_iter.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+        if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
+            var writer = StdoutWriter{};
+            try writer.writeAll("agy_title " ++ agy_pure.version ++ "\n");
+            return;
+        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             var writer = StdoutWriter{};
             try writer.writeAll(
                 \\Usage: agy_title [options]
@@ -39,6 +43,7 @@ pub fn main(init: std.process.Init.Minimal) !void {
                 \\Reads JSON state payload from stdin and writes formatted title to stdout.
                 \\
                 \\Options:
+                \\  -v, --version    Show version
                 \\  --no-emoji       Disable status emoji prefix
                 \\  --nerd-font      Use Nerd Font symbols instead of standard Unicode emojis
                 \\  --git            Show current git branch name in parentheses

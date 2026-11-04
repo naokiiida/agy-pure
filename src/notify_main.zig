@@ -29,7 +29,26 @@ pub fn main(init: std.process.Init.Minimal) !void {
     _ = args_iter.next(); // skip binary name
 
     while (args_iter.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--event=notification") or std.mem.eql(u8, arg, "-e=notification")) {
+        if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
+            var writer = StdoutWriter{};
+            try writer.writeAll("agy_notify " ++ agy_pure.version ++ "\n");
+            return;
+        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            var writer = StdoutWriter{};
+            try writer.writeAll(
+                \\Usage: agy_notify [options]
+                \\
+                \\Terminal notification hook for Google Antigravity CLI (agy).
+                \\Reads stop/notification JSON payload from stdin and emits OSC 777/OSC 9 to /dev/tty.
+                \\
+                \\Options:
+                \\  -v, --version        Show version
+                \\  -e, --event <name>   Event type (stop, notification)
+                \\  -h, --help           Show this help message
+                \\
+            );
+            return;
+        } else if (std.mem.eql(u8, arg, "--event=notification") or std.mem.eql(u8, arg, "-e=notification")) {
             is_notification = true;
         } else if (std.mem.eql(u8, arg, "--event") or std.mem.eql(u8, arg, "-e")) {
             if (args_iter.next()) |val| {
